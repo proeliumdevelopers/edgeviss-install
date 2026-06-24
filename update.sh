@@ -16,7 +16,7 @@
 
 set -e
 
-REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers/edgeviss}"
+REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers}"
 IMAGE="${EDGEVISS_IMAGE:-edgeviss}"
 TARGET="${1:-}"
 DRY_RUN=0
