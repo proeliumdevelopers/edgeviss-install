@@ -4,6 +4,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/install.sh | bash
 #   or with a specific version:
 #   curl -fsSL .../install.sh | EDGEVISS_VERSION=v0.2.0 bash
+#
+# By default this installs EdgeViss AND its backing platform services
+# together — one command, fully self-contained, nothing else to set up.
+# If you already have an existing platform deployment to connect to
+# instead, set EDGEVISS_BUNDLE_PLATFORM=0 and configure the endpoint URLs
+# in .env after install.
 
 set -e
 
@@ -12,6 +18,10 @@ IMAGE="${EDGEVISS_IMAGE:-edgeviss}"
 VERSION="${EDGEVISS_VERSION:-latest}"
 INSTALL_DIR="${EDGEVISS_DIR:-/opt/edgeviss}"
 PORT="${GATEWAY_UI_PORT:-8080}"
+BUNDLE_PLATFORM="${EDGEVISS_BUNDLE_PLATFORM:-1}"
+# Registry the bundled platform images are pulled from — defaults to our own
+# mirror (see deploy/mirror-platform-images.sh), never the upstream project's.
+MIRROR_REGISTRY="${EDGEVISS_MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}"
 
 # ── Architecture detection ─────────────────────────────────────────────────────
 ARCH=$(uname -m)
@@ -76,6 +86,19 @@ cp "$(dirname "$0")/update.sh" "$INSTALL_DIR/update.sh" 2>/dev/null || \
     -o "$INSTALL_DIR/update.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/update.sh" 2>/dev/null || true
 
+# ── Bundled platform stack (default) ──────────────────────────────────────────
+COMPOSE_FILES="-f docker-compose.yml"
+if [ "$BUNDLE_PLATFORM" = "1" ]; then
+  step "Fetching bundled platform services"
+  cp "$(dirname "$0")/platform-compose.yml" "$INSTALL_DIR/platform-compose.yml" 2>/dev/null || \
+    curl -fsSL "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/platform-compose.yml" \
+      -o "$INSTALL_DIR/platform-compose.yml" || err "Could not fetch platform-compose.yml"
+  COMPOSE_FILES="-f docker-compose.yml -f platform-compose.yml"
+  ok "Bundled platform stack ready"
+else
+  warn "EDGEVISS_BUNDLE_PLATFORM=0 — connecting to an existing platform deployment instead"
+fi
+
 # ── Write .env if it doesn't exist ────────────────────────────────────────────
 if [ ! -f "$INSTALL_DIR/.env" ]; then
   # Generate a strong random session secret
@@ -83,10 +106,26 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
     || echo "CHANGE_THIS_TO_A_RANDOM_48_CHAR_STRING")
 
+  if [ "$BUNDLE_PLATFORM" = "1" ]; then
+    PLATFORM_URLS="PLATFORM_METADATA_URL=http://platform-metadata:59881
+PLATFORM_DATA_URL=http://platform-data:59880
+PLATFORM_COMMAND_URL=http://platform-command:59882
+PLATFORM_SCHEDULER_URL=http://platform-scheduler:59863
+PLATFORM_NOTIFICATIONS_URL=http://platform-notifications:59860
+PLATFORM_RULES_URL=http://platform-rules:59720"
+  else
+    PLATFORM_URLS="PLATFORM_METADATA_URL=http://<your-platform-host>:59881
+PLATFORM_DATA_URL=http://<your-platform-host>:59880
+PLATFORM_COMMAND_URL=http://<your-platform-host>:59882
+PLATFORM_SCHEDULER_URL=http://<your-platform-host>:59863
+PLATFORM_NOTIFICATIONS_URL=http://<your-platform-host>:59860
+PLATFORM_RULES_URL=http://<your-platform-host>:59720"
+  fi
+
   cat > "$INSTALL_DIR/.env" << ENV
 # ── EdgeViss Gateway Configuration ───────────────────────────────────────────
-# Edit this file to connect to your installed platform services.
-# After editing, restart with: cd $INSTALL_DIR && docker compose restart
+# Edit this file to connect to your platform services.
+# After editing, restart with: cd $INSTALL_DIR && docker compose $COMPOSE_FILES restart
 
 GATEWAY_PORT=$PORT
 # Starts in "development" mode so it runs immediately on a fresh gateway with
@@ -103,16 +142,11 @@ SESSION_SECRET=$SECRET
 SESSION_SECURE=false   # Set to true when serving over HTTPS (required once GATEWAY_ENV=production)
 
 # ── Platform Service Endpoints ────────────────────────────────────────────────
-# Update these to the hostnames/IPs where your platform services are running.
-# If EdgeViss is on the same Docker network as your services, use service names.
-# If connecting to external hosts, use IP addresses or hostnames.
+$PLATFORM_URLS
 
-PLATFORM_METADATA_URL=http://platform-metadata:59881
-PLATFORM_DATA_URL=http://platform-data:59880
-PLATFORM_COMMAND_URL=http://platform-command:59882
-PLATFORM_SCHEDULER_URL=http://platform-scheduler:59863
-PLATFORM_NOTIFICATIONS_URL=http://platform-notifications:59860
-PLATFORM_RULES_URL=http://platform-rules:59720
+# Registry the bundled platform images are pulled from (only used when
+# platform-compose.yml is in play)
+MIRROR_REGISTRY=$MIRROR_REGISTRY
 
 # Optional: comma-separated data export service URLs
 # DATA_EXPORT_URLS=http://export-service:59730
@@ -121,12 +155,26 @@ PLATFORM_RULES_URL=http://platform-rules:59720
 # PLATFORM_AUTH_TOKEN=
 ENV
   ok ".env created with auto-generated secret"
-  warn "IMPORTANT: Edit $INSTALL_DIR/.env to set your platform service endpoint addresses"
+  if [ "$BUNDLE_PLATFORM" != "1" ]; then
+    warn "IMPORTANT: Edit $INSTALL_DIR/.env to set your platform service endpoint addresses"
+  fi
 else
   ok ".env already exists — keeping existing configuration"
 fi
 
 # ── Write docker-compose.yml ───────────────────────────────────────────────────
+NETWORK_BLOCK=""
+NETWORK_REF=""
+if [ "$BUNDLE_PLATFORM" = "1" ]; then
+  NETWORK_BLOCK="networks:
+      - edgeviss-platform-network"
+  NETWORK_REF="
+networks:
+  edgeviss-platform-network:
+    external: true
+    name: edgeviss-platform-network"
+fi
+
 cat > "$INSTALL_DIR/docker-compose.yml" << COMPOSE
 services:
   gateway:
@@ -164,16 +212,27 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    $NETWORK_BLOCK
 
 volumes:
   gateway-data:
+$NETWORK_REF
 COMPOSE
 ok "docker-compose.yml written"
 
 # ── Start ──────────────────────────────────────────────────────────────────────
+if [ "$BUNDLE_PLATFORM" = "1" ]; then
+  step "Starting platform services (this takes longer on first run — pulling several images)"
+  cd "$INSTALL_DIR"
+  MIRROR_REGISTRY="$MIRROR_REGISTRY" $COMPOSE -f platform-compose.yml up -d
+  ok "Platform services started"
+  step "Waiting for platform services to register (up to 60s)"
+  sleep 20
+fi
+
 step "Starting gateway"
 cd "$INSTALL_DIR"
-$COMPOSE up -d
+$COMPOSE $COMPOSE_FILES up -d gateway
 ok "Gateway started"
 
 # ── Wait for health ────────────────────────────────────────────────────────────
@@ -200,6 +259,6 @@ echo "  ║   create your admin account.                        ║"
 echo "  ║                                                      ║"
 echo "  ║   Config:  $INSTALL_DIR/.env                        "
 echo "  ║   Update:  $INSTALL_DIR/update.sh                   "
-echo "  ║   Stop:    cd $INSTALL_DIR && docker compose down    ║"
+echo "  ║   Stop:    cd $INSTALL_DIR && docker compose $COMPOSE_FILES down  "
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""

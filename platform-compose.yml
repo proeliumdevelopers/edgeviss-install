@@ -1,0 +1,218 @@
+# Bundled platform services for the EdgeViss appliance.
+# MIRROR_REGISTRY defaults to our own image registry — override only for
+# local testing against a different mirror.
+services:
+  platform-database:
+    image: postgres:18.1-alpine
+    container_name: platform-database
+    hostname: platform-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: platform_db
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - platform-db-data:/var/lib/postgresql/data
+    networks:
+      - platform-network
+
+  platform-registry:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:3.1.0
+    container_name: platform-registry
+    hostname: platform-registry
+    restart: unless-stopped
+    depends_on:
+      - platform-database
+    environment:
+      DATABASE_HOST: platform-database
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      MESSAGEBUS_AUTHMODE: none
+      MESSAGEBUS_HOST: platform-broker
+      MESSAGEBUS_PORT: "1883"
+      MESSAGEBUS_PROTOCOL: tcp
+      MESSAGEBUS_SECRETNAME: ""
+      MESSAGEBUS_TYPE: mqtt
+      SERVICE_HOST: platform-registry
+    networks:
+      - platform-network
+
+  platform-config-bootstrapper:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:3.1.0
+    container_name: platform-config-bootstrapper
+    hostname: platform-config-bootstrapper
+    command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
+    depends_on:
+      - platform-registry
+    environment:
+      ALL_SERVICES_DATABASE_HOST: platform-database
+      ALL_SERVICES_MESSAGEBUS_HOST: platform-broker
+      ALL_SERVICES_REGISTRY_HOST: platform-registry
+      APP_SERVICES_CLIENTS_CORE_METADATA_HOST: platform-metadata
+      DEVICE_SERVICES_CLIENTS_CORE_METADATA_HOST: platform-metadata
+      EDGEX_SECURITY_SECRET_STORE: "false"
+    networks:
+      - platform-network
+
+  platform-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: platform-broker
+    hostname: platform-broker
+    command: ["/usr/sbin/mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    restart: unless-stopped
+    networks:
+      - platform-network
+
+  platform-metadata:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:3.1.0
+    container_name: platform-metadata
+    hostname: platform-metadata
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-database
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-metadata
+    ports:
+      - "127.0.0.1:59881:59881"
+    networks:
+      - platform-network
+
+  platform-data:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:3.1.0
+    container_name: platform-data
+    hostname: platform-data
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-database
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-data
+    ports:
+      - "127.0.0.1:59880:59880"
+    networks:
+      - platform-network
+
+  platform-command:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:3.1.0
+    container_name: platform-command
+    hostname: platform-command
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-metadata
+      - platform-database
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      EXTERNALMQTT_URL: tcp://platform-broker:1883
+      SERVICE_HOST: platform-command
+    ports:
+      - "127.0.0.1:59882:59882"
+    networks:
+      - platform-network
+
+  platform-scheduler:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:3.1.0
+    container_name: platform-scheduler
+    hostname: platform-scheduler
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-database
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-scheduler
+    ports:
+      - "127.0.0.1:59863:59863"
+    networks:
+      - platform-network
+
+  platform-notifications:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:3.1.0
+    container_name: platform-notifications
+    hostname: platform-notifications
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-database
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-notifications
+    ports:
+      - "127.0.0.1:59860:59860"
+    networks:
+      - platform-network
+
+  platform-rules:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-rules:2.3
+    container_name: platform-rules
+    hostname: platform-rules
+    restart: unless-stopped
+    depends_on:
+      - platform-database
+      - platform-broker
+    environment:
+      CONNECTION__EDGEX__MQTTMSGBUS__OPTIONAL__CLIENTID: platform-rules
+      CONNECTION__EDGEX__MQTTMSGBUS__OPTIONAL__KEEPALIVE: "500"
+      CONNECTION__EDGEX__MQTTMSGBUS__PORT: "1883"
+      CONNECTION__EDGEX__MQTTMSGBUS__PROTOCOL: tcp
+      CONNECTION__EDGEX__MQTTMSGBUS__SERVER: platform-broker
+      CONNECTION__EDGEX__MQTTMSGBUS__TYPE: mqtt
+      EDGEX__DEFAULT__OPTIONAL__CLIENTID: platform-rules
+      EDGEX__DEFAULT__OPTIONAL__KEEPALIVE: "500"
+      EDGEX__DEFAULT__PORT: "1883"
+      EDGEX__DEFAULT__PROTOCOL: tcp
+      EDGEX__DEFAULT__SERVER: platform-broker
+      # NOTE: this exact value must match core-data's own internal default
+      # publish topic on the message bus — do not rename, it is a wire-level
+      # match, not a customer-visible label.
+      EDGEX__DEFAULT__TOPIC: edgex/rules-events
+      EDGEX__DEFAULT__TYPE: mqtt
+      KUIPER__BASIC__CONSOLELOG: "true"
+      KUIPER__BASIC__RESTPORT: "59720"
+    ports:
+      - "127.0.0.1:59720:59720"
+    volumes:
+      - platform-rules-data:/kuiper/data
+      - platform-rules-etc:/kuiper/etc
+      - platform-rules-log:/kuiper/log
+      - platform-rules-plugins:/kuiper/plugins
+    networks:
+      - platform-network
+
+  platform-device-virtual:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:3.1.0
+    container_name: platform-device-virtual
+    hostname: platform-device-virtual
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-metadata
+      - platform-data
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-device-virtual
+    networks:
+      - platform-network
+
+volumes:
+  platform-db-data:
+  platform-rules-data:
+  platform-rules-etc:
+  platform-rules-log:
+  platform-rules-plugins:
+
+networks:
+  platform-network:
+    name: edgeviss-platform-network
