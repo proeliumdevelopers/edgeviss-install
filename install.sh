@@ -89,11 +89,18 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 # After editing, restart with: cd $INSTALL_DIR && docker compose restart
 
 GATEWAY_PORT=$PORT
-GATEWAY_ENV=production
+# Starts in "development" mode so it runs immediately on a fresh gateway with
+# no TLS in front of it yet. Once you put a reverse proxy (Nginx/Caddy) with
+# real HTTPS in front of this gateway, switch to:
+#   GATEWAY_ENV=production
+#   SESSION_SECURE=true
+# (the backend refuses to start in production mode without HTTPS-only
+# cookies — that's intentional, not a bug to work around).
+GATEWAY_ENV=development
 
 # Security (auto-generated — do not share this value)
 SESSION_SECRET=$SECRET
-SESSION_SECURE=false   # Set to true when serving over HTTPS
+SESSION_SECURE=false   # Set to true when serving over HTTPS (required once GATEWAY_ENV=production)
 
 # ── Platform Service Endpoints ────────────────────────────────────────────────
 # Update these to the hostnames/IPs where your platform services are running.
