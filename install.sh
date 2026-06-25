@@ -29,7 +29,16 @@ case "$ARCH" in
   x86_64)  PLATFORM="linux/amd64" ;;
   aarch64) PLATFORM="linux/arm64" ;;
   arm64)   PLATFORM="linux/arm64" ;;
-  armv7l)  printf "\n  ERROR: 32-bit ARM not supported.\n  Install 64-bit Raspberry Pi OS and retry.\n\n"; exit 1 ;;
+  armv7l|armv6l|armhf)
+    printf "\n  ERROR: 32-bit ARM (%s) is not supported.\n\n" "$ARCH" >&2
+    printf "  This is not an EdgeViss limitation — the platform services this\n" >&2
+    printf "  installer bundles have never published a 32-bit ARM build, at any\n" >&2
+    printf "  version. There is no 32-bit build to fall back to.\n\n" >&2
+    printf "  Fix: reflash this gateway with 64-bit Raspberry Pi OS (or any other\n" >&2
+    printf "  64-bit OS for your board) and re-run this installer.\n" >&2
+    printf "  https://www.raspberrypi.com/software/  → choose the 64-bit image.\n\n" >&2
+    exit 1
+    ;;
   *)       PLATFORM="linux/amd64" ;;  # fallback
 esac
 

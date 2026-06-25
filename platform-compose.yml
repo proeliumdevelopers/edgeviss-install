@@ -8,7 +8,11 @@ services:
     hostname: platform-database
     restart: unless-stopped
     environment:
-      POSTGRES_DB: platform_db
+      # NOTE: core-keeper expects a database literally named "edgex_db" —
+      # this is hardcoded in the upstream binary, not read from this env var
+      # the way POSTGRES_DB normally works. Do not rename; purely internal,
+      # never visible outside this container.
+      POSTGRES_DB: edgex_db
       POSTGRES_PASSWORD: postgres
     volumes:
       - platform-db-data:/var/lib/postgresql/data
@@ -16,7 +20,7 @@ services:
       - platform-network
 
   platform-registry:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:4.0.2
     container_name: platform-registry
     hostname: platform-registry
     restart: unless-stopped
@@ -36,7 +40,7 @@ services:
       - platform-network
 
   platform-config-bootstrapper:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:4.0.2
     container_name: platform-config-bootstrapper
     hostname: platform-config-bootstrapper
     command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -62,7 +66,7 @@ services:
       - platform-network
 
   platform-metadata:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:4.0.2
     container_name: platform-metadata
     hostname: platform-metadata
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -80,7 +84,7 @@ services:
       - platform-network
 
   platform-data:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:4.0.2
     container_name: platform-data
     hostname: platform-data
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -98,7 +102,7 @@ services:
       - platform-network
 
   platform-command:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:4.0.2
     container_name: platform-command
     hostname: platform-command
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -117,7 +121,7 @@ services:
       - platform-network
 
   platform-scheduler:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:4.0.2
     container_name: platform-scheduler
     hostname: platform-scheduler
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -135,7 +139,7 @@ services:
       - platform-network
 
   platform-notifications:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:4.0.2
     container_name: platform-notifications
     hostname: platform-notifications
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -190,7 +194,7 @@ services:
       - platform-network
 
   platform-device-virtual:
-    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:3.1.0
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:4.0.2
     container_name: platform-device-virtual
     hostname: platform-device-virtual
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
