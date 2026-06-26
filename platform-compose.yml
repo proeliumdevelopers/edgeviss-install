@@ -1,6 +1,10 @@
 # Bundled platform services for the EdgeViss appliance.
 # MIRROR_REGISTRY defaults to our own image registry — override only for
 # local testing against a different mirror.
+# of the repo's own privacy setting. Do not move this back.
+#
+# MIRROR_REGISTRY defaults to our own GHCR namespace — override only for
+# local testing against a different mirror.
 services:
   platform-database:
     image: postgres:18.1-alpine
