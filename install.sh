@@ -212,6 +212,7 @@ services:
     image: ${REGISTRY}/${IMAGE}:${VERSION}
     platform: ${PLATFORM}
     container_name: edgeviss-gateway
+    pull_policy: always
     restart: unless-stopped
     ports:
       - "\${GATEWAY_PORT:-$PORT}:\${GATEWAY_PORT:-$PORT}"
@@ -237,8 +238,13 @@ services:
       PLATFORM_APP_SERVICES_URLS: \${DATA_EXPORT_URLS:-}
       PLATFORM_AUTH_TOKEN: \${PLATFORM_AUTH_TOKEN:-}
       UPDATE_CHECK_URL: \${UPDATE_CHECK_URL:-}
+      EDGEVISS_SELF_IMAGE: ${REGISTRY}/${IMAGE}:${VERSION}
     volumes:
       - gateway-data:/data
+      # Docker socket — allows the gateway to pull its own image update from the
+      # System UI without requiring SSH access. Mounted read-only is not supported
+      # for unix sockets; the daemon controls access via socket permissions (root/docker group).
+      - /var/run/docker.sock:/var/run/docker.sock
     # Go 1.22+ uses the rseq (restartable-sequences) syscall on Linux/arm64
     # for goroutine scheduling. Docker's default seccomp profile blocks rseq
     # on some Raspberry Pi / embedded kernel configurations, causing the
