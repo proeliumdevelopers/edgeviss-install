@@ -1,0 +1,121 @@
+name: Mirror platform images (multi-arch)
+
+# Creates ghcr.io/proeliumdevelopers/platform-* manifest aliases that point
+# at upstream image layers for BOTH linux/amd64 and linux/arm64.
+# Uses `docker buildx imagetools create` — no layer copy, just a manifest
+# pointer. The platform-* name hides upstream branding from `docker ps`/
+# `docker inspect` on customer gateways.
+#
+# Trigger:
+#   - Manually via workflow_dispatch (run this after any upstream version bump)
+#   - Automatically on push when platform-compose.yml changes (keeps tags in sync)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — print commands but do not push'
+        type: boolean
+        default: false
+
+  push:
+    branches: [main]
+    paths:
+      - 'platform-compose.yml'
+
+env:
+  REGISTRY: ghcr.io/proeliumdevelopers
+
+jobs:
+  mirror:
+    name: Mirror platform images to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write   # push to GHCR
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # imagetools create produces a fat multi-arch manifest that re-uses the
+      # upstream image layers — no bytes are copied to our registry, only the
+      # manifest JSON is stored at our tag. This makes the command instant and
+      # produces a truly multi-arch image (amd64 + arm64 + any other arch the
+      # upstream image published).
+      #
+      # Mapping: platform-NAME:VERSION → upstream source (exact case)
+      #
+      # platform-registry         ← edgexfoundry/core-keeper
+      # platform-config-bootstrapper ← edgexfoundry/core-common-config-bootstrapper
+      # platform-metadata         ← edgexfoundry/core-metadata
+      # platform-data             ← edgexfoundry/core-data
+      # platform-command          ← edgexfoundry/core-command
+      # platform-scheduler        ← edgexfoundry/support-scheduler
+      # platform-notifications    ← edgexfoundry/support-notifications
+      # platform-device-virtual   ← edgexfoundry/device-virtual
+      # platform-rules            ← lfedge/ekuiper (Alpine variant)
+
+      - name: Mirror EdgeX 4.0.2 services
+        env:
+          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+        run: |
+          set -e
+
+          mirror() {
+            local target="$1"
+            local source="$2"
+            echo "  $source  →  $target"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  [dry-run] docker buildx imagetools create --tag $target $source"
+            else
+              docker buildx imagetools create --tag "$target" "$source"
+            fi
+          }
+
+          echo "▶ Mirroring EdgeX 4.0.2 platform services"
+          mirror "${{ env.REGISTRY }}/platform-registry:4.0.2"              edgexfoundry/core-keeper:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-config-bootstrapper:4.0.2"   edgexfoundry/core-common-config-bootstrapper:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-metadata:4.0.2"              edgexfoundry/core-metadata:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-data:4.0.2"                  edgexfoundry/core-data:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-command:4.0.2"               edgexfoundry/core-command:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-scheduler:4.0.2"             edgexfoundry/support-scheduler:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-notifications:4.0.2"         edgexfoundry/support-notifications:4.0.2
+          mirror "${{ env.REGISTRY }}/platform-device-virtual:4.0.2"        edgexfoundry/device-virtual:4.0.2
+
+          echo ""
+          echo "▶ Mirroring eKuiper 2.3 (rules engine)"
+          mirror "${{ env.REGISTRY }}/platform-rules:2.3"                   lfedge/ekuiper:2.3-alpine
+
+          echo ""
+          echo "✓ All platform images mirrored with amd64 + arm64 manifests"
+
+      - name: Verify manifests include arm64
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          echo "▶ Verifying arm64 manifests exist"
+          for img in \
+            platform-registry:4.0.2 \
+            platform-config-bootstrapper:4.0.2 \
+            platform-metadata:4.0.2 \
+            platform-data:4.0.2 \
+            platform-command:4.0.2 \
+            platform-scheduler:4.0.2 \
+            platform-notifications:4.0.2 \
+            platform-device-virtual:4.0.2 \
+            platform-rules:2.3
+          do
+            if docker buildx imagetools inspect "${{ env.REGISTRY }}/$img" 2>&1 | grep -q "linux/arm64"; then
+              echo "  ✓  $img — arm64 present"
+            else
+              echo "  ✗  $img — arm64 MISSING" >&2
+              exit 1
+            fi
+          done
+          echo "✓ All images verified"
