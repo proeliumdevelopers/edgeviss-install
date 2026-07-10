@@ -42,6 +42,12 @@ case "$ARCH" in
   *)       PLATFORM="linux/amd64" ;;  # fallback
 esac
 
+# Some arm64 boards (Raspberry Pi with certain Docker builds) self-report as
+# linux/arm/v8 instead of linux/arm64 when docker compose pulls without an
+# explicit --platform flag. DOCKER_DEFAULT_PLATFORM pins the correct value for
+# all subsequent docker compose calls in this script.
+export DOCKER_DEFAULT_PLATFORM="$PLATFORM"
+
 # ── Colour output ─────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
