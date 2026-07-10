@@ -13,7 +13,7 @@
 
 set -e
 
-REGISTRY="${EDGEVISS_REGISTRY:-dataviss}"
+REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers}"
 IMAGE="${EDGEVISS_IMAGE:-edgeviss}"
 VERSION="${EDGEVISS_VERSION:-latest}"
 INSTALL_DIR="${EDGEVISS_DIR:-/opt/edgeviss}"
