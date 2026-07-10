@@ -36,6 +36,14 @@ INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${GATEWAY_PORT:-8080}"
 CONTAINER="edgeviss-gateway"
 
+# Build compose file args — include platform-compose.yml if present so the
+# gateway container joins the platform network and --remove-orphans doesn't
+# kill the EdgeX/platform service containers.
+COMPOSE_FILES="-f docker-compose.yml"
+if [ -f "$INSTALL_DIR/platform-compose.yml" ]; then
+  COMPOSE_FILES="$COMPOSE_FILES -f platform-compose.yml"
+fi
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -156,7 +164,7 @@ fi
 step "Restarting gateway"
 if [ "$DRY_RUN" = "0" ]; then
   cd "$INSTALL_DIR"
-  docker compose up -d --remove-orphans || die "docker compose up failed"
+  docker compose $COMPOSE_FILES up -d --remove-orphans gateway || die "docker compose up failed"
   ok "Container started"
 else
   ok "[dry-run] Would restart container"
@@ -188,7 +196,7 @@ else
   if docker image inspect "${REGISTRY}/${IMAGE}:rollback" >/dev/null 2>&1; then
     sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:rollback|g" \
       "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
-    docker compose up -d --remove-orphans 2>/dev/null || true
+    docker compose $COMPOSE_FILES up -d --remove-orphans gateway 2>/dev/null || true
     err "Rolled back to $CURRENT"
     err "Investigate with: docker logs $CONTAINER"
     err "Backup saved at:  $BACKUP_FILE"
