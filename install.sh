@@ -233,6 +233,13 @@ services:
       PLATFORM_AUTH_TOKEN: \${PLATFORM_AUTH_TOKEN:-}
     volumes:
       - gateway-data:/data
+    # Go 1.22+ uses the rseq (restartable-sequences) syscall on Linux/arm64
+    # for goroutine scheduling. Docker's default seccomp profile blocks rseq
+    # on some Raspberry Pi / embedded kernel configurations, causing the
+    # process to exit immediately with SIGSYS (exit code 159).
+    # seccomp:unconfined removes that restriction for this container only.
+    security_opt:
+      - seccomp:unconfined
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:\${GATEWAY_PORT:-$PORT}/api/health >/dev/null || exit 1"]
       interval: 30s
