@@ -168,6 +168,10 @@ MIRROR_REGISTRY=$MIRROR_REGISTRY
 
 # Optional: API token for secured deployments
 # PLATFORM_AUTH_TOKEN=
+
+# Update notifications — polls GitHub releases to show "Update available" in the System UI.
+# Clear this value to disable on air-gapped sites.
+UPDATE_CHECK_URL=https://api.github.com/repos/proeliumdevelopers/edgeviss/releases/latest
 ENV
   ok ".env created with auto-generated secret"
   if [ "$BUNDLE_PLATFORM" != "1" ]; then
@@ -232,6 +236,7 @@ services:
       PLATFORM_RULES_URL: \${PLATFORM_RULES_URL}
       PLATFORM_APP_SERVICES_URLS: \${DATA_EXPORT_URLS:-}
       PLATFORM_AUTH_TOKEN: \${PLATFORM_AUTH_TOKEN:-}
+      UPDATE_CHECK_URL: \${UPDATE_CHECK_URL:-}
     volumes:
       - gateway-data:/data
     # Go 1.22+ uses the rseq (restartable-sequences) syscall on Linux/arm64
