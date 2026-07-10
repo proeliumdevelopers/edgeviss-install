@@ -149,6 +149,10 @@ if [ "$DRY_RUN" = "0" ]; then
   sed -i "s|image: .*/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
     "$INSTALL_DIR/docker-compose.yml" \
     || die "Failed to update docker-compose.yml"
+  # Keep EDGEVISS_SELF_IMAGE in sync so the UI-driven update button knows
+  # which version is running and pulls the correct next version.
+  sed -i "s|EDGEVISS_SELF_IMAGE: .*/${IMAGE}:.*|EDGEVISS_SELF_IMAGE: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
+    "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
   # Ensure platform: is set immediately after the image: line so docker compose
   # pull works on boards that report linux/arm/v8 instead of linux/arm64.
   if ! grep -q "platform: ${PLATFORM}" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
