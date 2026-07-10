@@ -177,6 +177,18 @@ else
   ok ".env already exists — keeping existing configuration"
 fi
 
+# ── Pin PLATFORM in .env for docker compose image pulls ───────────────────────
+# Some arm64 boards (including Raspberry Pi with certain Docker builds) report
+# linux/arm/v8 as their platform to Docker instead of linux/arm64.  The
+# platform-compose.yml services use `platform: ${PLATFORM}` which overrides
+# daemon auto-detection and requests the correct manifest directly.
+if grep -q "^PLATFORM=" "$INSTALL_DIR/.env" 2>/dev/null; then
+  sed -i "s|^PLATFORM=.*|PLATFORM=$PLATFORM|" "$INSTALL_DIR/.env"
+else
+  printf "\n# Host architecture — used by platform-compose.yml to pin manifest pulls.\nPLATFORM=%s\n" "$PLATFORM" >> "$INSTALL_DIR/.env"
+fi
+ok "Host platform pinned: $PLATFORM"
+
 # ── Write docker-compose.yml ───────────────────────────────────────────────────
 NETWORK_BLOCK=""
 NETWORK_REF=""

@@ -25,6 +25,7 @@ services:
 
   platform-registry:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-registry
     hostname: platform-registry
     restart: unless-stopped
@@ -45,6 +46,7 @@ services:
 
   platform-config-bootstrapper:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-config-bootstrapper
     hostname: platform-config-bootstrapper
     command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -71,6 +73,7 @@ services:
 
   platform-metadata:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-metadata
     hostname: platform-metadata
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -89,6 +92,7 @@ services:
 
   platform-data:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-data
     hostname: platform-data
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -107,6 +111,7 @@ services:
 
   platform-command:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-command
     hostname: platform-command
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -126,6 +131,7 @@ services:
 
   platform-scheduler:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-scheduler
     hostname: platform-scheduler
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -144,6 +150,7 @@ services:
 
   platform-notifications:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-notifications
     hostname: platform-notifications
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -162,6 +169,7 @@ services:
 
   platform-rules:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-rules:2.3
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-rules
     hostname: platform-rules
     restart: unless-stopped
@@ -199,6 +207,7 @@ services:
 
   platform-device-virtual:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:4.0.2
+    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-device-virtual
     hostname: platform-device-virtual
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
