@@ -22,6 +22,16 @@ TARGET="${1:-}"
 DRY_RUN=0
 [ "$2" = "--dry-run" ] && DRY_RUN=1
 
+# Detect host architecture and pin the Docker platform so arm64 boards that
+# self-report as linux/arm/v8 still pull the correct linux/arm64 manifest.
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  PLATFORM="linux/amd64" ;;
+  aarch64|arm64) PLATFORM="linux/arm64" ;;
+  *)       PLATFORM="linux/amd64" ;;
+esac
+export DOCKER_DEFAULT_PLATFORM="$PLATFORM"
+
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${GATEWAY_PORT:-8080}"
 CONTAINER="edgeviss-gateway"
@@ -119,7 +129,7 @@ fi
 # ── Step 3: Pull new image ─────────────────────────────────────────────────────
 step "Pulling $REGISTRY/$IMAGE:$TARGET"
 if [ "$DRY_RUN" = "0" ]; then
-  docker pull "$REGISTRY/$IMAGE:$TARGET" || die "Pull failed — aborting. Gateway unchanged."
+  docker pull --platform "$PLATFORM" "$REGISTRY/$IMAGE:$TARGET" || die "Pull failed — aborting. Gateway unchanged."
   ok "Image pulled"
 else
   ok "[dry-run] Would pull $REGISTRY/$IMAGE:$TARGET"
