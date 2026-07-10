@@ -11,6 +11,8 @@ services:
     container_name: platform-database
     hostname: platform-database
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     environment:
       # NOTE: core-keeper expects a database literally named "edgex_db" —
       # this is hardcoded in the upstream binary, not read from this env var
@@ -72,6 +74,8 @@ services:
     hostname: platform-broker
     command: ["/usr/sbin/mosquitto", "-c", "/mosquitto-no-auth.conf"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     networks:
       - platform-network
 
