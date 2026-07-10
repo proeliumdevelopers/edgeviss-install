@@ -206,6 +206,7 @@ cat > "$INSTALL_DIR/docker-compose.yml" << COMPOSE
 services:
   gateway:
     image: ${REGISTRY}/${IMAGE}:${VERSION}
+    platform: ${PLATFORM}
     container_name: edgeviss-gateway
     restart: unless-stopped
     ports:
