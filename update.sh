@@ -138,7 +138,7 @@ fi
 # ── Step 4: Update image tag in compose ───────────────────────────────────────
 step "Updating version in docker-compose.yml"
 if [ "$DRY_RUN" = "0" ]; then
-  sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
+  sed -i "s|image: .*/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
     "$INSTALL_DIR/docker-compose.yml" \
     || die "Failed to update docker-compose.yml"
   ok "Version updated to $TARGET"
