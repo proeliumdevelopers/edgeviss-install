@@ -29,6 +29,8 @@ services:
     container_name: platform-registry
     hostname: platform-registry
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-database
     environment:
@@ -50,6 +52,8 @@ services:
     container_name: platform-config-bootstrapper
     hostname: platform-config-bootstrapper
     command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
     environment:
@@ -78,6 +82,8 @@ services:
     hostname: platform-metadata
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -97,6 +103,8 @@ services:
     hostname: platform-data
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -116,6 +124,8 @@ services:
     hostname: platform-command
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-metadata
@@ -136,6 +146,8 @@ services:
     hostname: platform-scheduler
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -155,6 +167,8 @@ services:
     hostname: platform-notifications
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -173,6 +187,8 @@ services:
     container_name: platform-rules
     hostname: platform-rules
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-database
       - platform-broker
@@ -212,6 +228,8 @@ services:
     hostname: platform-device-virtual
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-metadata
