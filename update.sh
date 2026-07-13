@@ -168,7 +168,7 @@ fi
 step "Restarting gateway"
 if [ "$DRY_RUN" = "0" ]; then
   cd "$INSTALL_DIR"
-  docker compose $COMPOSE_FILES up -d --remove-orphans gateway || die "docker compose up failed"
+  docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans gateway || die "docker compose up failed"
   ok "Container started"
 else
   ok "[dry-run] Would restart container"
@@ -200,7 +200,7 @@ else
   if docker image inspect "${REGISTRY}/${IMAGE}:rollback" >/dev/null 2>&1; then
     sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:rollback|g" \
       "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
-    docker compose $COMPOSE_FILES up -d --remove-orphans gateway 2>/dev/null || true
+    docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans gateway 2>/dev/null || true
     err "Rolled back to $CURRENT"
     err "Investigate with: docker logs $CONTAINER"
     err "Backup saved at:  $BACKUP_FILE"
