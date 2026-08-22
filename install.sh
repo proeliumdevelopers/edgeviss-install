@@ -167,11 +167,11 @@ fi
 ok "Docker Compose found"
 
 # ── Disk space check ───────────────────────────────────────────────────────────
-# Cheap to check up front, and directly prevents a repeat of the GW-019-class
-# disk-full incident (see CLAUDE.md) at the single worst possible time: mid-
-# install, on a customer's brand-new hardware, before there's even a running
-# gateway to diagnose the problem from. 2GB is a floor, not a comfortable
-# margin -- the platform images alone run over 1GB combined.
+# Cheap to check up front, and directly prevents a disk-full incident at the
+# single worst possible time: mid-install, on a customer's brand-new
+# hardware, before there's even a running gateway to diagnose the problem
+# from. 2GB is a floor, not a comfortable margin -- the platform images
+# alone run over 1GB combined.
 MIN_FREE_KB=2097152  # 2GB
 AVAIL_KB=$(df -Pk "$(dirname "$INSTALL_DIR")" 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -lt "$MIN_FREE_KB" ]; then
@@ -186,7 +186,7 @@ fi
 # ── Docker log rotation ────────────────────────────────────────────────────────
 # Set once, up front, before any container ever runs on this host. Without
 # this, dockerd's json-file default has no size cap — a noisy container's
-# logs grow unbounded forever. Found live on a fielded Pi gateway (GW-019):
+# logs grow unbounded forever. Found live on a fielded Pi gateway:
 # two container logs alone grew to 1.8GB and 770MB and filled the entire
 # 15GB root partition, cascading into app failures and failed updates. See
 # update.sh's matching retrofit step (Step 4d) for gateways installed before

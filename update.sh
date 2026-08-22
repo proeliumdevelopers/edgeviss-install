@@ -353,7 +353,7 @@ if [ "$DRY_RUN" = "0" ] && docker network inspect "$PLATFORM_NETWORK" >/dev/null
 fi
 
 # ── Step 4d: Ensure Docker log rotation (prevent /var filling the root disk) ───
-# Found live on a fielded Pi gateway (GW-019, 2026-08-21): with no log-driver
+# Found live on a fielded Pi gateway: with no log-driver
 # config anywhere, dockerd defaults to json-file with NO size cap, so a noisy
 # container's stdout/stderr grows without bound forever. On that gateway two
 # container logs alone had grown to 1.8GB and 770MB, filling the 15GB root
@@ -411,7 +411,7 @@ with open(path, 'w') as f:
         # Existing json-file logs already on disk keep growing under the
         # OLD unbounded behavior until Docker itself rotates them on next
         # write past the new cap -- for a host that's already near-full
-        # (like GW-019 was), truncate now so the fix has effect immediately
+        # (a disk that had already filled), truncate now so the fix has effect immediately
         # rather than waiting for organic rotation.
         sudo find /var/lib/docker/containers/ -name '*-json.log' -size +10M -exec truncate -s 0 {} \; 2>/dev/null \
           && ok "Truncated existing oversized container logs (>10MB) to apply the new cap immediately" \

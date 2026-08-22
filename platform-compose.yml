@@ -10,14 +10,12 @@
 #
 # Internal env var key NAMES (e.g. EDGEX__DEFAULT__SERVER) are dictated by the
 # upstream binaries' own config-binding convention and cannot be renamed
-# without forking them — same category as backend Go code already allowed to
-# reference EdgeX internally (see CLAUDE.md branding rule). Those only show up
-# inside the container's own process environment, never in compose output a
-# customer would read, and not in any text the UI displays.
+# without forking them. Those only show up inside the container's own
+# process environment, never in compose output a customer would read, and
+# not in any text the UI displays.
 #
-# To bump an upstream version: update the tags in
-# proeliumdevelopers/edgeviss-image-mirror's mirror-platform-images.sh, run
-# that repo's workflow_dispatch to publish the new platform-* images, then
+# To bump an upstream version: update the mirrored image tags in our own
+# internal build tooling, publish the new platform-* images, then
 # update the tags below to match. That mirroring lives in its own dedicated,
 # otherwise-empty repo — NOT in edgeviss or edgeviss-install — because GHCR
 # connects a published package to whichever repo's Actions workflow pushed
