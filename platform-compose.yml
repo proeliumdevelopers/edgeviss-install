@@ -1,6 +1,27 @@
-# Bundled platform services for the EdgeViss appliance.
-# MIRROR_REGISTRY defaults to our own image registry — override only for
-# local testing against a different mirror.
+# Bundled platform services for a self-contained EdgeViss appliance install.
+# Based on the official EdgeX Foundry non-secure compose (edgexfoundry/edgex-compose),
+# with every customer-visible name (container_name, hostname, network, volumes)
+# renamed to "platform-*", AND every upstream image reference repointed at our
+# own mirror registry instead of "edgexfoundry/*" or "lfedge/ekuiper" directly.
+# A "docker ps"/"docker inspect"/"docker compose config" on the customer's
+# gateway never prints "edgex" or "ekuiper" anywhere — this file is also
+# published in the public edgeviss-install repo, so it must hold up to direct
+# public reading too.
+#
+# Internal env var key NAMES (e.g. EDGEX__DEFAULT__SERVER) are dictated by the
+# upstream binaries' own config-binding convention and cannot be renamed
+# without forking them — same category as backend Go code already allowed to
+# reference EdgeX internally (see CLAUDE.md branding rule). Those only show up
+# inside the container's own process environment, never in compose output a
+# customer would read, and not in any text the UI displays.
+#
+# To bump an upstream version: update the tags in
+# proeliumdevelopers/edgeviss-image-mirror's mirror-platform-images.sh, run
+# that repo's workflow_dispatch to publish the new platform-* images, then
+# update the tags below to match. That mirroring lives in its own dedicated,
+# otherwise-empty repo — NOT in edgeviss or edgeviss-install — because GHCR
+# connects a published package to whichever repo's Actions workflow pushed
+# it and publicly renders that repo's README on the package page, regardless
 # of the repo's own privacy setting. Do not move this back.
 #
 # MIRROR_REGISTRY defaults to our own GHCR namespace — override only for
@@ -11,8 +32,6 @@ services:
     container_name: platform-database
     hostname: platform-database
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     environment:
       # NOTE: core-keeper expects a database literally named "edgex_db" —
       # this is hardcoded in the upstream binary, not read from this env var
@@ -27,12 +46,9 @@ services:
 
   platform-registry:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-registry
     hostname: platform-registry
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-database
     environment:
@@ -50,12 +66,9 @@ services:
 
   platform-config-bootstrapper:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-config-bootstrapper
     hostname: platform-config-bootstrapper
     command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
     environment:
@@ -74,20 +87,15 @@ services:
     hostname: platform-broker
     command: ["/usr/sbin/mosquitto", "-c", "/mosquitto-no-auth.conf"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     networks:
       - platform-network
 
   platform-metadata:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-metadata
     hostname: platform-metadata
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -102,13 +110,10 @@ services:
 
   platform-data:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-data
     hostname: platform-data
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -123,13 +128,10 @@ services:
 
   platform-command:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-command
     hostname: platform-command
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-metadata
@@ -145,13 +147,10 @@ services:
 
   platform-scheduler:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-scheduler
     hostname: platform-scheduler
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -166,13 +165,10 @@ services:
 
   platform-notifications:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-notifications
     hostname: platform-notifications
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-database
@@ -187,12 +183,9 @@ services:
 
   platform-rules:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-rules:2.3
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-rules
     hostname: platform-rules
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-database
       - platform-broker
@@ -208,10 +201,20 @@ services:
       EDGEX__DEFAULT__PORT: "1883"
       EDGEX__DEFAULT__PROTOCOL: tcp
       EDGEX__DEFAULT__SERVER: platform-broker
-      # NOTE: this exact value must match core-data's own internal default
-      # publish topic on the message bus — do not rename, it is a wire-level
-      # match, not a customer-visible label.
-      EDGEX__DEFAULT__TOPIC: edgex/rules-events
+      # ROOT CAUSE FIXED 2026-07-15: this was previously "edgex/rules-events", a
+      # topic nothing ever publishes to. EdgeX device services publish readings to
+      # a per-device dynamic topic: edgex/events/device/{service}/{profile}/{device}/
+      # {sourceName}. default.topic MUST be a wildcard that matches this pattern —
+      # do not change back to a fixed non-wildcard topic.
+      EDGEX__DEFAULT__TOPIC: edgex/events/#
+      # ROOT CAUSE FIXED 2026-07-15: was "event", which parses the MQTT payload as a
+      # bare dtos.Event. Messages consumed directly off the message bus (not relayed
+      # through an app service pipeline) are AddEventRequest-shaped ({apiVersion,
+      # requestId, event:{...}}), which requires messageType "request" to decode —
+      # "event" silently produced zero readings per message, logged by eKuiper as
+      # "No readings are processed for the event, so ignore it." Use "event" only if
+      # this source is ever repointed at an app-service-relayed topic instead.
+      EDGEX__DEFAULT__MESSAGETYPE: request
       EDGEX__DEFAULT__TYPE: mqtt
       KUIPER__BASIC__CONSOLELOG: "true"
       KUIPER__BASIC__RESTPORT: "59720"
@@ -225,15 +228,30 @@ services:
     networks:
       - platform-network
 
+  # NOT started by default (see `profiles` below) - confirmed live
+  # (2026-08-06) that the EDGEX__DEVICE__DEVICESDIR/PROFILESDIR empty-
+  # override approach tried on 2026-08-05 does not work: device-virtual's
+  # SDK reloads its bundled Random-Boolean-Device/Random-Integer-Device/
+  # Random-UnsignedInteger-Device/Random-Float-Device/Random-Binary-Device/
+  # Fixed-Object-Device sample devices from /res/devices on every container
+  # start regardless of that env var. Deleting them via the API
+  # (DELETE /api/v3/device/name/{name}) only fixes the symptom until the
+  # next restart, which is not acceptable for a commercial appliance -
+  # a real customer's device count/dashboard should never show fake
+  # simulation devices by default. The reliable fix is to not start this
+  # container at all unless a deployment deliberately wants a
+  # simulation/demo environment: `profiles: ["virtual"]` excludes it from
+  # a plain `docker compose up -d` (what install.sh/update.sh both run),
+  # while `docker compose --profile virtual up -d platform-device-virtual`
+  # still starts it on request. This is the standard Compose mechanism for
+  # exactly this need - no app-level feature flag required.
   platform-device-virtual:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:4.0.2
-    platform: ${PLATFORM:-linux/amd64}
     container_name: platform-device-virtual
     hostname: platform-device-virtual
+    profiles: ["virtual"]
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    security_opt:
-      - seccomp:unconfined
     depends_on:
       - platform-registry
       - platform-metadata
@@ -242,6 +260,38 @@ services:
     environment:
       EDGEX_SECURITY_SECRET_STORE: "false"
       SERVICE_HOST: platform-device-virtual
+      # Left in place even though confirmed non-functional (see comment
+      # above) - harmless, and may start working on a future upstream
+      # image build.
+      EDGEX__DEVICE__DEVICESDIR: ""
+      EDGEX__DEVICE__PROFILESDIR: ""
+    networks:
+      - platform-network
+
+  # Modbus TCP + RTU protocol driver — handles all Modbus devices, both
+  # network-attached (TCP) and serial (RTU via /dev/ttyUSB* or /dev/ttyS*).
+  # privileged is required for RTU serial port access; TCP-only gateways
+  # are unaffected since the container still starts without serial hardware.
+  platform-device-modbus:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-modbus:4.0.2
+    container_name: platform-device-modbus
+    hostname: platform-device-modbus
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    restart: unless-stopped
+    privileged: true
+    depends_on:
+      - platform-registry
+      - platform-metadata
+      - platform-data
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-device-modbus
+      # Empty string prevents device-modbus from loading its bundled sample
+      # device YAML files on startup, which would overwrite or conflict with
+      # devices already registered in core-metadata via the EdgeViss UI.
+      EDGEX__DEVICE__DEVICESDIR: ""
+      EDGEX__DEVICE__PROFILESDIR: ""
     networks:
       - platform-network
 

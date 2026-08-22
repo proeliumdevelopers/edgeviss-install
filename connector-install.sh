@@ -17,6 +17,20 @@ REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers/edgeviss-connector}"
 VERSION="${EDGEVISS_CONNECTOR_VERSION:-latest}"
 LOCAL_URL="${EDGEVISS_LOCAL_URL:-http://edgeviss-gateway:8080}"
 POLL_INTERVAL="${CONNECTOR_POLL_INTERVAL_SECONDS:-30}"
+GATEWAY_DIR="${EDGEVISS_DIR:-/opt/edgeviss}"
+
+# Read the shared self-update token that deploy/install.sh already generated
+# into the gateway's own .env (CONNECTOR_TOKEN=...) -- lets this Connector
+# apply a target version set on Cloud Manager's Devices page by calling the
+# gateway's POST /api/system/connector-update. Empty if install.sh predates
+# this feature or the gateway is at a non-default EDGEVISS_DIR (override with
+# CONNECTOR_UPDATE_TOKEN=... on the command line in that case); self-update
+# via Cloud Manager just won't apply automatically until it's set — nothing
+# else about the Connector depends on it.
+CONNECTOR_UPDATE_TOKEN="${CONNECTOR_UPDATE_TOKEN:-}"
+if [ -z "$CONNECTOR_UPDATE_TOKEN" ] && [ -f "$GATEWAY_DIR/.env" ]; then
+  CONNECTOR_UPDATE_TOKEN=$(grep -E '^CONNECTOR_TOKEN=' "$GATEWAY_DIR/.env" | tail -1 | cut -d= -f2-)
+fi
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 ok()  { printf "${GREEN}  ✓${NC} %s\n" "$1"; }
@@ -52,6 +66,7 @@ docker run -d \
   -e CONNECTOR_STORE_PATH=/data/state.json \
   -e EDGEVISS_LOCAL_URL="$LOCAL_URL" \
   -e POLL_INTERVAL_SECONDS="$POLL_INTERVAL" \
+  -e CONNECTOR_UPDATE_TOKEN="$CONNECTOR_UPDATE_TOKEN" \
   "$REGISTRY:$VERSION"
 ok "Connector running"
 
