@@ -17,15 +17,73 @@ set -e
 # endpoint and wires up ADR-001 secure-mode auth if it finds one. See the
 # RECONFIGURE block near the end of this file.
 RECONFIGURE=0
+INSTALL_MODE="${EDGEVISS_INSTALL_MODE:-lab}"
+# KIOSK=1 (--kiosk): gateway with a screen -- open Local full-screen on the
+# local display at every login. KIOSK=0 (--headless, default): no screen,
+# open http://<gateway-ip>:<port> from any PC. Same install either way.
+KIOSK="${EDGEVISS_KIOSK:-0}"
+# Fresh installs are TCP-hardened unless RTU access is explicitly requested.
+# Existing .env files are never rewritten by this installer, so an already-
+# fielded RTU gateway keeps its current privilege/device-access posture.
+MODBUS_RTU_MODE="${EDGEVISS_ENABLE_MODBUS_RTU:-0}"
 for arg in "$@"; do
   [ "$arg" = "--reconfigure" ] && RECONFIGURE=1
+  [ "$arg" = "--production" ] && INSTALL_MODE="production"
+  [ "$arg" = "--lab" ] && INSTALL_MODE="lab"
+  [ "$arg" = "--kiosk" ] && KIOSK=1
+  [ "$arg" = "--headless" ] && KIOSK=0
+  [ "$arg" = "--modbus-rtu" ] && MODBUS_RTU_MODE="1"
+  [ "$arg" = "--modbus-tcp-only" ] && MODBUS_RTU_MODE="0"
 done
 [ "${EDGEVISS_RECONFIGURE:-0}" = "1" ] && RECONFIGURE=1
+case "$INSTALL_MODE" in
+  production|lab) : ;;
+  *) printf "ERROR: EDGEVISS_INSTALL_MODE must be 'production' or 'lab'\n" >&2; exit 1 ;;
+esac
+case "$MODBUS_RTU_MODE" in
+  0|1) : ;;
+  *) printf "ERROR: EDGEVISS_ENABLE_MODBUS_RTU must be 0 or 1\n" >&2; exit 1 ;;
+esac
+if [ "$INSTALL_MODE" = "production" ] && [ "${EDGEVISS_EXTERNAL_HTTPS:-0}" != "1" ]; then
+  printf "\nERROR: production install requires HTTPS in front of EdgeViss.\n" >&2
+  printf "Set EDGEVISS_EXTERNAL_HTTPS=1 only after configuring the reverse proxy/TLS endpoint,\n" >&2
+  printf "then re-run with --production (or EDGEVISS_INSTALL_MODE=production).\n\n" >&2
+  exit 1
+fi
 
 REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers}"
 IMAGE="${EDGEVISS_IMAGE:-edgeviss}"
 VERSION="${EDGEVISS_VERSION:-latest}"
 INSTALL_DIR="${EDGEVISS_DIR:-/opt/edgeviss}"
+# Must run as root: it writes /opt/edgeviss, /etc/docker and systemd files.
+if [ "$(id -u)" != "0" ]; then
+  printf "\nERROR: run the installer as root, e.g.\n  curl -fsSL https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/install.sh | sudo bash\n\n" >&2
+  exit 1
+fi
+# "latest" (the default) means the newest released vX.Y.Z image, resolved
+# from the registry's public tag list and then pinned, so the gateway records
+# an exact version and later updates/rollbacks are reproducible. Only if the
+# registry cannot be read does it fall back to the floating :latest tag.
+if [ "$VERSION" = "latest" ]; then
+  _GHCR_TOKEN=$(curl -fsSL -m 15 "https://ghcr.io/token?scope=repository:${EDGEVISS_REGISTRY_REPO:-proeliumdevelopers/edgeviss}:pull" 2>/dev/null \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  _LATEST=$(curl -fsSL -m 15 -H "Authorization: Bearer ${_GHCR_TOKEN}" \
+      "https://ghcr.io/v2/${EDGEVISS_REGISTRY_REPO:-proeliumdevelopers/edgeviss}/tags/list?n=1000" 2>/dev/null \
+    | tr ',' '\n' | tr -d '"[]{} ' | sed 's/^tags://' \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+  if [ -n "$_LATEST" ]; then
+    VERSION="$_LATEST"
+    printf "Newest released version: %s\n" "$VERSION"
+  else
+    printf "WARNING: could not read the release list; installing the floating ':latest' tag\n" >&2
+  fi
+fi
+# Production must be reproducible. An unpinned floating tag makes rollback and
+# site acceptance impossible to tie to exact bytes.
+if [ "$INSTALL_MODE" = "production" ] && [ "$VERSION" = "latest" ]; then
+  printf "\nERROR: production install requires a pinned EDGEVISS_VERSION (for example v1.2.3); ':latest' is not accepted.\n\n" >&2
+  exit 1
+fi
 PORT="${GATEWAY_UI_PORT:-8080}"
 BUNDLE_PLATFORM="${EDGEVISS_BUNDLE_PLATFORM:-1}"
 # Registry the bundled platform images are pulled from — defaults to our own
@@ -97,7 +155,11 @@ fi
 # is a warning, not a hard stop, since EdgeViss itself has no Debian
 # dependency, only this installer's auto-install path does.
 if [ -r /etc/os-release ]; then
+  # os-release defines its own VERSION (e.g. "13 (trixie)"); sourcing it
+  # directly would clobber the EdgeVISS image tag held in $VERSION.
+  _EV_VERSION="$VERSION"
   . /etc/os-release
+  VERSION="$_EV_VERSION"
   case "${ID:-}${ID_LIKE:-}" in
     *debian*|*ubuntu*) : ;;
     *)
@@ -130,7 +192,10 @@ if ! command -v docker >/dev/null 2>&1; then
     # even when invoked exactly the way this script's own usage comment
     # at the top recommends.
     REPLY=""
-    if [ -t 1 ] && [ -r /dev/tty ]; then
+    # EDGEVISS_INSTALL_DOCKER=1 answers yes without asking (used by the
+    # Manager's Windows/WSL path, which has no usable terminal for a prompt).
+    [ "${EDGEVISS_INSTALL_DOCKER:-0}" = "1" ] && REPLY="y"
+    if [ -z "$REPLY" ] && [ -t 1 ] && [ -r /dev/tty ]; then
       printf "  Install Docker now via Docker's official convenience script \
 (curl -fsSL https://get.docker.com | sh)? [y/N] "
       read -r REPLY < /dev/tty || REPLY=""
@@ -152,6 +217,15 @@ Debian/Ubuntu. Install it from https://docs.docker.com/engine/install/ and re-ru
   fi
 fi
 ok "Docker found"
+
+# The daemon must be running, not just installed. WSL and fresh installs may
+# not have started it yet.
+if ! docker info >/dev/null 2>&1; then
+  systemctl enable --now docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do docker info >/dev/null 2>&1 && break; sleep 2; done
+  docker info >/dev/null 2>&1 || err "Docker is installed but its service is not running. Start it (sudo systemctl start docker, or on WSL: sudo service docker start) and re-run."
+  ok "Docker service started"
+fi
 
 DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
 ok "Docker version: $DOCKER_VERSION"
@@ -206,8 +280,23 @@ else
 EOF
     sudo systemctl restart docker 2>/dev/null && ok "Configured Docker log rotation (10m x 3 files per container)" \
       || warn "Wrote /etc/docker/daemon.json but could not restart docker — log rotation won't apply until the host restarts docker"
+  elif command -v python3 >/dev/null 2>&1 && sudo python3 - <<'PY'
+import json
+p = "/etc/docker/daemon.json"
+with open(p) as f:
+    cfg = json.load(f)
+cfg.setdefault("log-driver", "json-file")
+opts = cfg.setdefault("log-opts", {})
+opts.setdefault("max-size", "10m")
+opts.setdefault("max-file", "3")
+with open(p, "w") as f:
+    json.dump(cfg, f, indent=2)
+PY
+  then
+    sudo systemctl restart docker 2>/dev/null && ok "Merged Docker log rotation into the existing /etc/docker/daemon.json" \
+      || warn "Merged log rotation into /etc/docker/daemon.json but could not restart docker — it applies after the next docker restart"
   else
-    warn "/etc/docker/daemon.json exists with custom content — add log-opts (max-size/max-file) to it manually, see deploy/update.sh's retrofit step for the merge logic"
+    warn "/etc/docker/daemon.json has custom content that could not be merged automatically — every EdgeVISS container still caps its own logs (10m x 3) through docker-compose"
   fi
 fi
 
@@ -336,6 +425,28 @@ step "Pulling gateway image  ($REGISTRY/$IMAGE:$VERSION for $PLATFORM)"
 docker pull --platform "$PLATFORM" "$REGISTRY/$IMAGE:$VERSION"
 ok "Image ready"
 
+# ── Existing installation: upgrade in place ────────────────────────────────────
+# Re-running the installer on a gateway that already has EdgeVISS keeps its
+# .env (secrets, settings) and its data volume; the compose file is rewritten
+# for this version. The database is copied first so the upgrade can be undone.
+if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+  PREV_VERSION=$(sed -n "s|^\s*image: ${REGISTRY}/${IMAGE}:\(.*\)$|\1|p" "$INSTALL_DIR/docker-compose.yml" | head -1)
+  step "Existing installation found (${PREV_VERSION:-unknown version}) — upgrading in place to $VERSION"
+  DATA_VOL=$(docker volume ls -q | grep -E '(^|_)gateway-data$' | head -1)
+  if [ -n "$DATA_VOL" ]; then
+    mkdir -p "$INSTALL_DIR/backups"
+    BK="pre-install-$(date +%Y%m%d-%H%M%S)-from-${PREV_VERSION:-unknown}"
+    if docker run --rm --user root --entrypoint sh -v "$DATA_VOL":/data:ro -v "$INSTALL_DIR/backups":/backup \
+        "$REGISTRY/$IMAGE:$VERSION" -c "for f in /data/gateway-ui.db /data/gateway-ui.db-wal /data/gateway-ui.db-shm; do [ -f \"\$f\" ] && cp \"\$f\" \"/backup/$BK.\${f##*.}\"; done; [ -f /backup/$BK.db ]" >/dev/null 2>&1; then
+      ok "Database backed up to $INSTALL_DIR/backups/$BK.db"
+    else
+      warn "Could not back up the database before upgrading — continuing (settings and data stay in volume $DATA_VOL)"
+    fi
+  fi
+else
+  step "New installation"
+fi
+
 # ── Create install directory ───────────────────────────────────────────────────
 step "Creating installation at  $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
@@ -345,6 +456,15 @@ cp "$(dirname "$0")/update.sh" "$INSTALL_DIR/update.sh" 2>/dev/null || \
   curl -fsSL "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/update.sh" \
     -o "$INSTALL_DIR/update.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/update.sh" 2>/dev/null || true
+
+# Copy the read-only production posture preflight alongside update.sh so the
+# handover command printed at the end of this installer always refers to a
+# real installed file, not the source checkout the installer may have been
+# piped from.
+cp "$(dirname "$0")/production-preflight.sh" "$INSTALL_DIR/production-preflight.sh" 2>/dev/null || \
+  curl -fsSL "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/production-preflight.sh" \
+    -o "$INSTALL_DIR/production-preflight.sh" 2>/dev/null || true
+chmod +x "$INSTALL_DIR/production-preflight.sh" 2>/dev/null || true
 
 # ── Bundled platform stack (default) ──────────────────────────────────────────
 COMPOSE_FILES="-f docker-compose.yml"
@@ -362,7 +482,9 @@ else
 fi
 
 # ── Write .env if it doesn't exist ────────────────────────────────────────────
+NEW_ENV=0
 if [ ! -f "$INSTALL_DIR/.env" ]; then
+  NEW_ENV=1
   # Generate a strong random session secret
   SECRET=$(openssl rand -base64 48 2>/dev/null \
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
@@ -381,21 +503,38 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
     || echo "CHANGE_THIS_TO_A_RANDOM_TOKEN")
 
-  # GID of the host's docker.sock — needed so the gateway container (runs as
-  # a non-root user) can actually use the socket once mounted, for in-UI
-  # self-update (spawns a sibling updater container; see handleSelfUpdate).
-  # Without this, the mount succeeds but every docker API call inside the
-  # container gets a silent permission-denied.
-  DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null \
-    || getent group docker 2>/dev/null | cut -d: -f3 \
-    || echo "0")
-
-  # Shared secret the optional Connector agent (deploy/connector-install.sh)
-  # uses to trigger self-update on this gateway's behalf when Cloud Manager's
-  # Devices page sets a target version -- see handleConnectorSelfUpdate in
-  # backend/internal/api/system_edgex.go. Only relevant if the Connector is
-  # ever installed; harmless if not.
+  # Machine-to-machine secret for POST /api/system/connector-update
+  # (handleConnectorSelfUpdate, backend/internal/api/system_edgex.go).
+  # gateway-ui-api's own Manager poll now reconciles self-update in-process
+  # by default (reconcileSelfUpdate, deployment_dispatch.go) -- this
+  # loopback route/token stays available as a harmless, unused-by-default
+  # machine-to-machine hook, not the primary self-update path.
   CONNECTOR_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+    || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
+    || echo "")
+
+  # Shared secret gateway-ui-api presents as X-Connector-Auth when
+  # forwarding deployment commands to the optional Connector agent
+  # (the "connector" service in docker-compose.yml) over its narrow local HTTP contract (see
+  # deployment_dispatch.go, connector/internal/localapi). Only relevant if
+  # the Connector is ever installed; harmless if not -- an empty/mismatched
+  # token just means deployment dispatch fails closed rather than silently
+  # calling the Connector unauthenticated.
+  CONNECTOR_LOCAL_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+    || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
+    || echo "")
+
+  # Machine-to-machine token for /api/alarms/ingest, /api/alarms/evaluate,
+  # and /api/sparkplug/ingest (Foundation Hardening Batch 5C). Auto-
+  # generated on every FRESH install so a gateway that later switches
+  # GATEWAY_ENV to production already has this configured rather than
+  # discovering, only once alarms silently stop ingesting, that production
+  # now requires it (see backend/internal/api/machine_ingest_auth.go).
+  # Never generated for an EXISTING install (see the `if [ ! -f .env ]`
+  # guard around this whole block) -- an already-fielded gateway's token
+  # (or deliberate choice to leave it empty) is never silently rotated by
+  # re-running this script.
+  ALARM_INGEST_TOKEN=$(openssl rand -hex 24 2>/dev/null \
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
     || echo "")
 
@@ -417,24 +556,43 @@ PLATFORM_RULES_URL=http://<your-platform-host>:59720
 PLATFORM_REGISTRY_URL=http://<your-platform-host>:59890"
   fi
 
+  if [ "$INSTALL_MODE" = "production" ]; then
+    GENERATED_GATEWAY_ENV="production"
+    GENERATED_SESSION_SECURE="true"
+    # Production assumes the TLS reverse proxy is on this gateway by default,
+    # so the clear-text app listener is loopback-only. Sites whose reverse
+    # proxy is on another trusted host may explicitly set EDGEVISS_BIND_ADDRESS
+    # to the gateway's dedicated management IP before install.
+    GENERATED_BIND_ADDRESS="${EDGEVISS_BIND_ADDRESS:-127.0.0.1}"
+  else
+    GENERATED_GATEWAY_ENV="development"
+    GENERATED_SESSION_SECURE="false"
+    GENERATED_BIND_ADDRESS="${EDGEVISS_BIND_ADDRESS:-0.0.0.0}"
+  fi
+  if [ "$MODBUS_RTU_MODE" = "1" ]; then
+    GENERATED_MODBUS_PRIVILEGED="true"
+  else
+    GENERATED_MODBUS_PRIVILEGED="false"
+  fi
+
   cat > "$INSTALL_DIR/.env" << ENV
 # ── EdgeViss Gateway Configuration ───────────────────────────────────────────
 # Edit this file to connect to your platform services.
 # After editing, restart with: cd $INSTALL_DIR && docker compose $COMPOSE_FILES restart
 
 GATEWAY_PORT=$PORT
-# Starts in "development" mode so it runs immediately on a fresh gateway with
-# no TLS in front of it yet. Once you put a reverse proxy (Nginx/Caddy) with
-# real HTTPS in front of this gateway, switch to:
-#   GATEWAY_ENV=production
-#   SESSION_SECURE=true
-# (the backend refuses to start in production mode without HTTPS-only
-# cookies — that's intentional, not a bug to work around).
-GATEWAY_ENV=development
+# Host interface for the clear-text application listener. Fresh production
+# installs default to loopback so users reach EdgeViss through the configured
+# HTTPS reverse proxy, not by bypassing TLS on the raw application port.
+GATEWAY_BIND_ADDRESS=$GENERATED_BIND_ADDRESS
+# Installation posture. --production (or EDGEVISS_INSTALL_MODE=production)
+# is accepted only when EDGEVISS_EXTERNAL_HTTPS=1 is explicitly supplied.
+# Lab mode is intentionally NOT a production deployment posture.
+GATEWAY_ENV=$GENERATED_GATEWAY_ENV
 
 # Security (auto-generated — do not share this value)
 SESSION_SECRET=$SECRET
-SESSION_SECURE=false   # Set to true when serving over HTTPS (required once GATEWAY_ENV=production)
+SESSION_SECURE=$GENERATED_SESSION_SECURE
 
 # Recovery token (auto-generated) — the ONLY way to reset a login if every
 # engineer/admin password is lost. Printed once at the end of this install
@@ -447,18 +605,35 @@ GATEWAY_RECOVERY_TOKEN=$RECOVERY_TOKEN
 # ── Platform Service Endpoints ────────────────────────────────────────────────
 $PLATFORM_URLS
 
+# The bundled EdgeX 4.0.2 appliance uses the /api/v3 REST prefix. Product
+# version and REST API prefix are intentionally separate concepts. Do not
+# change this unless a future EdgeX release/prefix pair is explicitly certified.
+PLATFORM_API_VERSION=v3
+
+# Scheduled full migration backups are written inside the persistent /data
+# volume. This path must stay on persistent storage so container replacement
+# cannot erase the backup history.
+AUTO_BACKUP_DIR=/data/backups
+
 # Registry the bundled platform images are pulled from (only used when
 # platform-compose.yml is in play)
 MIRROR_REGISTRY=$MIRROR_REGISTRY
 
+# Fresh installs are TCP-hardened by default. `--modbus-rtu` (or
+# EDGEVISS_ENABLE_MODBUS_RTU=1) makes this true explicitly for a gateway that
+# needs host serial-device access. Existing .env files are never rewritten.
+MODBUS_PRIVILEGED=$GENERATED_MODBUS_PRIVILEGED
+
 # ── In-UI self-update (System → Update) ───────────────────────────────────────
-# Both auto-detected above. EDGEVISS_HOST_INSTALL_DIR must be the HOST path to
-# this directory (not a path inside any container) — it's bind-mounted 1:1 into
-# the short-lived updater container so update.sh's file edits land on the real
-# host filesystem. If you move this install directory, update this value.
+# EDGEVISS_HOST_INSTALL_DIR must be the HOST path to this directory (not a
+# path inside any container) -- gateway-ui-api sends it to the Connector
+# sidecar, which bind-mounts it 1:1 into its own short-lived updater
+# container so update.sh's file edits land on the real host filesystem.
+# gateway-ui-api itself has no Docker access and never mounts this path
+# directly. If you move this install directory, update this value.
 EDGEVISS_HOST_INSTALL_DIR=$INSTALL_DIR
-DOCKER_GID=$DOCKER_GID
 CONNECTOR_TOKEN=$CONNECTOR_TOKEN
+CONNECTOR_LOCAL_TOKEN=$CONNECTOR_LOCAL_TOKEN
 
 # Self URL the stream engine (eKuiper) uses to POST alarm evaluations back to
 # this gateway -- must match the docker-compose service's container_name
@@ -470,6 +645,16 @@ CONNECTOR_TOKEN=$CONNECTOR_TOKEN
 # sink to /api/alarms/evaluate is failing on every single message.
 ALARM_INGEST_URL=http://edgeviss-gateway:$PORT
 
+# Auto-generated (Batch 5C) — required in production, optional (network-
+# level trust) in development/test. See machine_ingest_auth.go. If you
+# already have a fielded gateway from before this change and are running
+# --reconfigure rather than a fresh install, this value is left exactly as
+# it was in your existing .env (this block only runs when .env doesn't
+# exist yet) — set ALARM_INGEST_TOKEN yourself before switching that
+# gateway to GATEWAY_ENV=production, or alarm ingest will start returning
+# 503 until you do.
+ALARM_INGEST_TOKEN=$ALARM_INGEST_TOKEN
+
 # Optional: comma-separated data export service URLs
 # DATA_EXPORT_URLS=http://export-service:59730
 
@@ -477,10 +662,10 @@ ALARM_INGEST_URL=http://edgeviss-gateway:$PORT
 # PLATFORM_AUTH_TOKEN=
 
 # ── Optional modules (off by default) ────────────────────────────────────────
-# The default menu is the core commissioning path: Dashboard, Asset Management,
-# Device Control, Data Center, Alarms, System, Audit. These four are advanced/
-# admin tools, off by default so a first-time OT engineer isn't shown raw
-# platform internals. Uncomment any you actually need, then restart:
+# The default UI is workflow-oriented: Dashboard, Data, Publish, Operate,
+# System, Advanced and Audit. These four optional modules expose lower-level
+# platform internals; keep them off unless an expert workflow needs them.
+# Uncomment any you actually need, then restart:
 #   cd $INSTALL_DIR && docker compose $COMPOSE_FILES restart
 # FEATURE_APP_SERVICES=true    # read-only health/config viewer for the northbound pipeline
 # FEATURE_RULES=true           # raw stream-engine rule editor (advanced/admin escape hatch)
@@ -509,13 +694,22 @@ networks:
 fi
 
 cat > "$INSTALL_DIR/docker-compose.yml" << COMPOSE
+# Every container caps its own logs, independent of the host's
+# /etc/docker/daemon.json, so logs can never fill the gateway's disk.
+x-logging: &capped-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   gateway:
     image: ${REGISTRY}/${IMAGE}:${VERSION}
     container_name: edgeviss-gateway
     restart: unless-stopped
+    logging: *capped-logs
     ports:
-      - "\${GATEWAY_PORT:-$PORT}:\${GATEWAY_PORT:-$PORT}"
+      - "\${GATEWAY_BIND_ADDRESS:-0.0.0.0}:\${GATEWAY_PORT:-$PORT}:\${GATEWAY_PORT:-$PORT}"
     env_file:
       - .env
     environment:
@@ -531,6 +725,9 @@ services:
       FEATURE_RULES: \${FEATURE_RULES:-false}
       FEATURE_SCHEDULER: \${FEATURE_SCHEDULER:-false}
       FEATURE_NOTIFICATIONS: \${FEATURE_NOTIFICATIONS:-false}
+      # Cloud Remote Access capability. On by default: a tunnel still needs
+      # the System -> Remote Access toggle plus Manager-delivered credentials.
+      FEATURE_REMOTE_ACCESS: \${FEATURE_REMOTE_ACCESS:-true}
       PLATFORM_METADATA_URL: \${PLATFORM_METADATA_URL}
       PLATFORM_DATA_URL: \${PLATFORM_DATA_URL}
       PLATFORM_COMMAND_URL: \${PLATFORM_COMMAND_URL}
@@ -540,41 +737,38 @@ services:
       PLATFORM_REGISTRY_URL: \${PLATFORM_REGISTRY_URL}
       PLATFORM_APP_SERVICES_URLS: \${DATA_EXPORT_URLS:-}
       PLATFORM_AUTH_TOKEN: \${PLATFORM_AUTH_TOKEN:-}
-      # In-UI self-update (System -> Update) needs both of these to spawn
-      # its sibling updater container. Missing EDGEVISS_HOST_INSTALL_DIR
-      # disables the feature with a clear message rather than failing oddly.
+      # In-UI self-update (System -> Update) forwards this to the Connector
+      # sidecar, which spawns its own sibling updater container -- this
+      # gateway has no Docker access of its own. Missing
+      # EDGEVISS_HOST_INSTALL_DIR disables the feature with a clear message
+      # rather than failing oddly.
       EDGEVISS_HOST_INSTALL_DIR: \${EDGEVISS_HOST_INSTALL_DIR:-}
-      # Lets the optional Connector agent trigger the same self-update path
-      # on this gateway's behalf (see handleConnectorSelfUpdate). Empty =
-      # that route always 403s -- safe if the Connector is never installed.
+      # Harmless, unused-by-default machine-to-machine self-update loopback
+      # (see handleConnectorSelfUpdate) -- gateway-ui-api's own Manager poll
+      # reconciles self-update in-process by default now. Empty = that route
+      # always 403s.
       EDGEVISS_CONNECTOR_TOKEN: \${CONNECTOR_TOKEN:-}
-    group_add:
-      - "\${DOCKER_GID:-0}"
+      # Narrow authenticated local contract to the optional Connector agent
+      # (deployment dispatch + GET_RUNTIME_STATUS) -- gateway-ui-api is the
+      # sole Cloud-facing command consumer and never touches Docker itself.
+      # Empty = deployment dispatch fails closed rather than calling the
+      # Connector with no auth header. Safe if the Connector is never
+      # installed.
+      CONNECTOR_LOCAL_URL: \${CONNECTOR_LOCAL_URL:-http://edgeviss-connector:8090}
+      CONNECTOR_LOCAL_TOKEN: \${CONNECTOR_LOCAL_TOKEN:-}
     volumes:
       - gateway-data:/data
       # Host /dev mounted read-only so the device form's Serial Port scanner
       # can list connected serial/USB adapters (ttyUSB*, ttyACM*, ttyAMA*,
       # ttyS*, video*). Read-only: the backend only enumerates node names.
       - /dev:/host/dev:ro
-      # Docker socket + the install dir bind-mounted 1:1 (same host path on
-      # both sides) so the sibling updater container this backend spawns for
-      # self-update can both control Docker and edit docker-compose.yml/.env
-      # at their real host paths. See handleSelfUpdate in
-      # backend/internal/api/system_edgex.go for why 1:1 path mounting
-      # matters here (Docker-outside-of-Docker: any -v flag issued by a
-      # command inside this container is resolved by the HOST daemon).
-      - /var/run/docker.sock:/var/run/docker.sock
-      - \${EDGEVISS_HOST_INSTALL_DIR:-$INSTALL_DIR}:\${EDGEVISS_HOST_INSTALL_DIR:-$INSTALL_DIR}
-      # System -> Reboot Host and the autostart toggle (handleRebootHost /
-      # handleGetAutostart / handleSetAutostart) need these two host paths.
-      # /etc/systemd/system read-write to create/remove the same enablement
-      # symlink "systemctl enable/disable docker" would; the /usr/lib copy
-      # read-only just to confirm docker.service's real unit file exists
-      # before symlinking to it. Neither needs --privileged; reboot itself
-      # (a separate short-lived helper container, not this one) is the only
-      # action that does.
-      - /etc/systemd/system:/host-systemd
-      - /usr/lib/systemd/system:/host-systemd-lib:ro
+      # NOTE: this container has NO docker.sock mount and no group_add --
+      # self-update and Reboot Host both forward to the edgeviss-connector
+      # sidecar's own Docker-privileged local API instead (see
+      # the "connector" service below, CONNECTOR_LOCAL_URL/CONNECTOR_LOCAL_TOKEN
+      # above). This gateway is unprivileged with respect to Docker.
+      # (Start on boot is also done by the connector below: writing the
+      # host's /etc/systemd/system needs root, which this container is not.)
       # Container has no timezone info of its own -- without this, Go's
       # time.Now() reads UTC, so System -> Scheduled Reboot's HH:MM (entered
       # and documented as host-local time, see system_scheduled_reboot.go)
@@ -583,12 +777,37 @@ services:
       # the time I set." Read-only bind of the host's real zoneinfo file is
       # the standard fix for this in any minimal/scratch container image.
       - /etc/localtime:/etc/localtime:ro
+      # Gateway health (Dashboard + Publish -> Gateway health) reports the
+      # HOST's hostname, IP/MAC and network state, not the container's own:
+      # read-only views of the host's hostname, /proc and /sys.
+      - /etc/hostname:/host/etc/hostname:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:\${GATEWAY_PORT:-$PORT}/api/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
+    $NETWORK_BLOCK
+
+  # Privileged local worker for in-UI updates and host reboots (manual and
+  # scheduled). No Cloud identity and no published port: only the gateway
+  # reaches it, on this compose network, with CONNECTOR_LOCAL_TOKEN.
+  connector:
+    image: ${REGISTRY}/edgeviss-connector:${VERSION}
+    container_name: edgeviss-connector
+    restart: unless-stopped
+    logging: *capped-logs
+    environment:
+      CONNECTOR_LISTEN_ADDR: ":8090"
+      CONNECTOR_LOCAL_TOKEN: \${CONNECTOR_LOCAL_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Start on boot (System page): enable/disable docker.service the way
+      # "systemctl enable docker" does. The unit dir is read-only.
+      - /etc/systemd/system:/host-systemd
+      - /usr/lib/systemd/system:/host-systemd-lib:ro
     $NETWORK_BLOCK
 
 volumes:
@@ -636,10 +855,36 @@ if [ "$BUNDLE_PLATFORM" = "1" ]; then
   # there. Confirmed live: identical symptom reproduced on real hardware,
   # fixed by forcing the platform explicitly instead of trusting Docker's
   # host-arch autodetection.
+  BROKER_ID_BEFORE=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
   MIRROR_REGISTRY="$MIRROR_REGISTRY" DOCKER_DEFAULT_PLATFORM="$PLATFORM" $COMPOSE -f platform-compose.yml up -d
   ok "Platform services started"
+  # On an upgrade, a recreated message broker leaves the stream engine's
+  # shared source disconnected (exports/alarms "running" but receiving
+  # nothing); restart it so northbound publishing resumes.
+  BROKER_ID_AFTER=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
+  if [ -n "$BROKER_ID_BEFORE" ] && [ "$BROKER_ID_BEFORE" != "$BROKER_ID_AFTER" ]; then
+    docker restart platform-rules >/dev/null 2>&1 && ok "Message broker was recreated — restarted the stream engine"
+  fi
   step "Waiting for platform services to register (up to 60s)"
   sleep 20
+fi
+
+# ── Manager enrollment (optional) ──────────────────────────────────────────────
+# A Manager-generated install command passes MANAGER_URL, DEVICE_ID and a
+# one-time ACTIVATION_TOKEN. They go into .env for the gateway's first start
+# (BootstrapManagerActivation), and the token is removed again once the
+# gateway reports the result below.
+ACT_URL="${MANAGER_URL:-${EDGEVISS_MANAGER_URL:-}}"
+ACT_ID="${DEVICE_ID:-${EDGEVISS_DEVICE_ID:-}}"
+ACT_TOKEN="${ACTIVATION_TOKEN:-${EDGEVISS_ACTIVATION_TOKEN:-}}"
+ENROLL=0
+if [ -n "$ACT_URL" ] && [ -n "$ACT_ID" ] && [ -n "$ACT_TOKEN" ]; then
+  ENROLL=1
+  sed -i '/^EDGEVISS_MANAGER_URL=/d;/^EDGEVISS_DEVICE_ID=/d;/^EDGEVISS_ACTIVATION_TOKEN=/d' "$INSTALL_DIR/.env"
+  printf 'EDGEVISS_MANAGER_URL=%s\nEDGEVISS_DEVICE_ID=%s\nEDGEVISS_ACTIVATION_TOKEN=%s\n' "$ACT_URL" "$ACT_ID" "$ACT_TOKEN" >> "$INSTALL_DIR/.env"
+  chmod 600 "$INSTALL_DIR/.env"
+elif [ -n "$ACT_URL$ACT_ID$ACT_TOKEN" ]; then
+  warn "Manager enrollment needs MANAGER_URL, DEVICE_ID and ACTIVATION_TOKEN together — skipping enrollment (activate later in System → Manager Connectivity)"
 fi
 
 step "Starting gateway"
@@ -649,6 +894,14 @@ cd "$INSTALL_DIR"
 # independently of the earlier `docker pull --platform "$PLATFORM"`.
 DOCKER_DEFAULT_PLATFORM="$PLATFORM" $COMPOSE $COMPOSE_FILES up -d gateway
 ok "Gateway started"
+
+# The connector (in-UI updates, host reboots) is started separately so a
+# registry problem with its image never blocks the gateway itself.
+if DOCKER_DEFAULT_PLATFORM="$PLATFORM" $COMPOSE $COMPOSE_FILES up -d connector; then
+  ok "Connector started"
+else
+  warn "Connector image could not be pulled (${REGISTRY}/edgeviss-connector:${VERSION}) — data collection is unaffected, but in-UI updates and scheduled reboots stay unavailable until: cd $INSTALL_DIR && docker compose $COMPOSE_FILES up -d connector"
+fi
 
 # ── Wait for health ────────────────────────────────────────────────────────────
 step "Waiting for gateway to be ready (up to 30s)"
@@ -660,6 +913,58 @@ until curl -fsS "http://localhost:$PORT/api/health" >/dev/null 2>&1; do
 done
 [ "$TRIES" -le 15 ] && ok "Gateway is healthy"
 
+if [ "$ENROLL" = "1" ]; then
+  step "Enrolling with EdgeVISS Cloud Manager ($ACT_URL)"
+  ENROLL_RESULT=""
+  for _ in $(seq 1 60); do
+    ENROLL_RESULT=$(docker logs edgeviss-gateway 2>&1 | grep -o 'manager activation: [a-z, ]*' | tail -1)
+    [ -n "$ENROLL_RESULT" ] && break
+    sleep 5
+  done
+  # The one-time token is spent either way; never leave it on disk.
+  sed -i '/^EDGEVISS_ACTIVATION_TOKEN=/d' "$INSTALL_DIR/.env"
+  case "$ENROLL_RESULT" in
+    *completed*) ok "Enrolled — this gateway now reports to $ACT_URL" ;;
+    *already*)   ok "Already enrolled with a Manager — kept the existing enrollment" ;;
+    *failed*)    warn "Enrollment failed: $(docker logs edgeviss-gateway 2>&1 | grep 'manager activation: failed' | tail -1 | sed 's/.*"err":"\([^"]*\)".*/\1/')"
+                 warn "Generate a new install command in the Manager (tokens are single-use), or activate in System → Manager Connectivity" ;;
+    *)           warn "No enrollment result within 5 minutes — check System → Manager Connectivity" ;;
+  esac
+fi
+
+# ── Optional: local display (kiosk) ───────────────────────────────────────────
+if [ "$KIOSK" = "1" ]; then
+  step "Setting up the local display (kiosk)"
+  KIOSK_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
+  if [ -z "$KIOSK_USER" ] || [ "$KIOSK_USER" = "root" ]; then
+    warn "Kiosk skipped: run the installer with sudo from the desktop user's account so the screen opens for that user."
+  elif [ "$(systemctl get-default 2>/dev/null)" != "graphical.target" ]; then
+    warn "Kiosk skipped: this system does not boot to a desktop. Install a desktop OS image (e.g. Raspberry Pi OS with desktop) or use the gateway headless."
+  else
+    BROWSER="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
+    if [ -z "$BROWSER" ] && command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y chromium >/dev/null 2>&1 || apt-get install -y chromium-browser >/dev/null 2>&1 || true
+      BROWSER="$(command -v chromium || command -v chromium-browser || true)"
+    fi
+    if [ -z "$BROWSER" ]; then
+      warn "Kiosk skipped: could not install Chromium. Install it and re-run with --kiosk."
+    else
+      KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"
+      mkdir -p "$KIOSK_HOME/.config/autostart"
+      cat > "$KIOSK_HOME/.config/autostart/edgeviss-kiosk.desktop" <<KIOSKEOF
+[Desktop Entry]
+Type=Application
+Name=EdgeVISS Local
+Comment=Opens EdgeVISS Local full-screen on this gateway's display
+Exec=sh -c 'until curl -fs http://localhost:${PORT}/api/health >/dev/null; do sleep 3; done; exec ${BROWSER} --kiosk --noerrdialogs --disable-infobars --no-first-run --password-store=basic --check-for-update-interval=31536000 http://localhost:${PORT}/'
+X-GNOME-Autostart-enabled=true
+KIOSKEOF
+      chown -R "$KIOSK_USER": "$KIOSK_HOME/.config/autostart"
+      ok "Kiosk enabled for user $KIOSK_USER: EdgeVISS Local opens full-screen at every login (remove $KIOSK_HOME/.config/autostart/edgeviss-kiosk.desktop to disable)"
+    fi
+  fi
+fi
+
 # ── Done ───────────────────────────────────────────────────────────────────────
 GATEWAY_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
@@ -667,7 +972,11 @@ echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║   EdgeViss is running!                               ║"
 echo "  ║                                                      ║"
-echo "  ║   Open:  http://${GATEWAY_IP}:${PORT}               "
+if [ "$INSTALL_MODE" = "production" ]; then
+  echo "  ║   Open:  your configured HTTPS endpoint             "
+else
+  echo "  ║   Open:  http://${GATEWAY_IP}:${PORT}               "
+fi
 echo "  ║                                                      ║"
 echo "  ║   First time? The browser will guide you to         ║"
 echo "  ║   create your admin account.                        ║"
@@ -676,14 +985,26 @@ echo "  ║   Config:  $INSTALL_DIR/.env                        "
 echo "  ║   Update:  $INSTALL_DIR/update.sh                   "
 echo "  ║   Stop:    cd $INSTALL_DIR && docker compose $COMPOSE_FILES down  "
 echo "  ╚══════════════════════════════════════════════════════╝"
-echo ""
-echo "  ⚠  SAVE THIS PASSWORD RECOVERY TOKEN NOW — shown only this once:"
-echo ""
-echo "      $RECOVERY_TOKEN"
-echo ""
-echo "  If every login is ever lost, use this token on the Login page's"
-echo "  \"Forgot password?\" link to reset the admin account. It's also"
-echo "  saved in $INSTALL_DIR/.env, but store a copy offline too (printed"
-echo "  copy, password manager) — losing that file as well means no"
-echo "  recovery path exists."
-echo ""
+if [ "$NEW_ENV" = "1" ]; then
+  echo ""
+  echo "  ⚠  SAVE THIS PASSWORD RECOVERY TOKEN NOW — shown only this once:"
+  echo ""
+  echo "      $RECOVERY_TOKEN"
+  echo ""
+  echo "  If every login is ever lost, use this token on the Login page's"
+  echo "  \"Forgot password?\" link to reset the admin account. It's also"
+  echo "  saved in $INSTALL_DIR/.env, but store a copy offline too (printed"
+  echo "  copy, password manager) — losing that file as well means no"
+  echo "  recovery path exists."
+  echo ""
+else
+  ok "Existing .env preserved; recovery token was not rotated or printed"
+fi
+
+
+# Production posture reminder added by Local Production Readiness Closure.
+if [ "$INSTALL_MODE" = "lab" ]; then
+  warn "Installed in LAB mode (GATEWAY_ENV=development, non-secure session cookie). Do not use this posture for a production site. Configure HTTPS and re-run with --production, then run deploy/production-preflight.sh."
+else
+  ok "Production mode selected. Run $INSTALL_DIR/production-preflight.sh before site handover."
+fi

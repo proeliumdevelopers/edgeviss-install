@@ -14,20 +14,29 @@
 # process environment, never in compose output a customer would read, and
 # not in any text the UI displays.
 #
-# To bump an upstream version: update the mirrored image tags in our own
-# internal build tooling, publish the new platform-* images, then
-# update the tags below to match. That mirroring lives in its own dedicated,
-# otherwise-empty repo — NOT in edgeviss or edgeviss-install — because GHCR
+# To bump an upstream version: update the mirrored image tags via our own
+# internal build tooling, publish the new platform-* images, then update
+# the tags below to match. That mirroring lives in its own dedicated repo
+# — NOT in edgeviss or edgeviss-install — because GHCR
 # connects a published package to whichever repo's Actions workflow pushed
 # it and publicly renders that repo's README on the package page, regardless
 # of the repo's own privacy setting. Do not move this back.
 #
 # MIRROR_REGISTRY defaults to our own GHCR namespace — override only for
 # local testing against a different mirror.
+# Every platform container caps its own logs (10 MB x 3 files) so a noisy
+# service can never fill the gateway's disk, whatever the host daemon.json says.
+x-logging: &capped-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   platform-database:
     image: postgres:18.1-alpine
     container_name: platform-database
+    logging: *capped-logs
     hostname: platform-database
     restart: unless-stopped
     environment:
@@ -45,6 +54,7 @@ services:
   platform-registry:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-registry:4.0.2
     container_name: platform-registry
+    logging: *capped-logs
     hostname: platform-registry
     restart: unless-stopped
     depends_on:
@@ -65,6 +75,7 @@ services:
   platform-config-bootstrapper:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-config-bootstrapper:4.0.2
     container_name: platform-config-bootstrapper
+    logging: *capped-logs
     hostname: platform-config-bootstrapper
     command: ["/core-common-config-bootstrapper", "--registry", "-cp=keeper.http://platform-registry:59890"]
     depends_on:
@@ -82,6 +93,7 @@ services:
   platform-broker:
     image: eclipse-mosquitto:2.0
     container_name: platform-broker
+    logging: *capped-logs
     hostname: platform-broker
     command: ["/usr/sbin/mosquitto", "-c", "/mosquitto-no-auth.conf"]
     restart: unless-stopped
@@ -91,6 +103,7 @@ services:
   platform-metadata:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-metadata:4.0.2
     container_name: platform-metadata
+    logging: *capped-logs
     hostname: platform-metadata
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
@@ -109,6 +122,7 @@ services:
   platform-data:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-data:4.0.2
     container_name: platform-data
+    logging: *capped-logs
     hostname: platform-data
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
@@ -127,6 +141,7 @@ services:
   platform-command:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-command:4.0.2
     container_name: platform-command
+    logging: *capped-logs
     hostname: platform-command
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
@@ -146,6 +161,7 @@ services:
   platform-scheduler:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-scheduler:4.0.2
     container_name: platform-scheduler
+    logging: *capped-logs
     hostname: platform-scheduler
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
@@ -164,6 +180,7 @@ services:
   platform-notifications:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-notifications:4.0.2
     container_name: platform-notifications
+    logging: *capped-logs
     hostname: platform-notifications
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
@@ -182,6 +199,7 @@ services:
   platform-rules:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-rules:2.3
     container_name: platform-rules
+    logging: *capped-logs
     hostname: platform-rules
     restart: unless-stopped
     depends_on:
@@ -223,6 +241,18 @@ services:
       - platform-rules-etc:/kuiper/etc
       - platform-rules-log:/kuiper/log
       - platform-rules-plugins:/kuiper/plugins
+      # Read-only. Same volume gateway-ui-api mounts read-write in
+      # docker-compose.yml -- see ALARM_SUPPRESSION_MIRROR_DB_PATH's
+      # comment there for why this is a dedicated narrow volume and not a
+      # mount of the main gateway-ui.db. UNVERIFIED against a live gateway
+      # as of this change: confirm the platform-device-modbus mirrored
+      # eKuiper image actually ships the "sql" source plugin (it is one of
+      # eKuiper's default-compiled drivers upstream, but this repo runs a
+      # separately mirrored image per platform-compose.yml's own header
+      # comment, and a slimmed mirror build is not guaranteed to include
+      # every default source) before enabling ALARM_SUPPRESSION_MIRROR_DB_PATH
+      # on any real gateway.
+      - alarm-suppression-data:/suppression:ro
     networks:
       - platform-network
 
@@ -246,6 +276,7 @@ services:
   platform-device-virtual:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-virtual:4.0.2
     container_name: platform-device-virtual
+    logging: *capped-logs
     hostname: platform-device-virtual
     profiles: ["virtual"]
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
@@ -268,15 +299,19 @@ services:
 
   # Modbus TCP + RTU protocol driver — handles all Modbus devices, both
   # network-attached (TCP) and serial (RTU via /dev/ttyUSB* or /dev/ttyS*).
-  # privileged is required for RTU serial port access; TCP-only gateways
-  # are unaffected since the container still starts without serial hardware.
+  # RTU serial access may require container privilege on some field gateways.
+  # Fresh installs explicitly set MODBUS_PRIVILEGED=false for TCP-only hardening.
+  # Existing deployments with no variable keep the legacy true fallback to avoid
+  # silently breaking an already-fielded RTU bus during upgrade. Set true only
+  # after an engineer confirms RTU serial access is required.
   platform-device-modbus:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-modbus:4.0.2
     container_name: platform-device-modbus
+    logging: *capped-logs
     hostname: platform-device-modbus
     command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
     restart: unless-stopped
-    privileged: true
+    privileged: ${MODBUS_PRIVILEGED:-true}
     depends_on:
       - platform-registry
       - platform-metadata
@@ -299,6 +334,10 @@ volumes:
   platform-rules-etc:
   platform-rules-log:
   platform-rules-plugins:
+  # Declared here too (in addition to docker-compose.yml) so this file
+  # still composes on its own -- Compose merges same-named top-level
+  # volumes across -f files rather than conflicting.
+  alarm-suppression-data:
 
 networks:
   platform-network:

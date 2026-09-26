@@ -25,6 +25,12 @@ DRY_RUN=0
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${GATEWAY_PORT:-8080}"
 CONTAINER="edgeviss-gateway"
+# Production updates are deliberately stricter than lab updates. Read the
+# persisted installer posture rather than trusting the caller's shell.
+DEPLOY_ENV=$(sed -n 's/^GATEWAY_ENV=//p' "$INSTALL_DIR/.env" 2>/dev/null | tail -1)
+[ -n "$DEPLOY_ENV" ] || DEPLOY_ENV="development"
+IS_PRODUCTION=0
+[ "$DEPLOY_ENV" = "production" ] && IS_PRODUCTION=1
 
 # Same platform-detection fix as install.sh: `docker compose` resolves each
 # service's platform from the host's own Docker-reported default, which on
@@ -53,9 +59,11 @@ if [ -z "$TARGET" ]; then
 fi
 
 if [ "$TARGET" = "latest" ]; then
-  warn "WARNING: ':latest' should never be used in production."
-  warn "         Pin to a specific version (e.g. v0.4.0) for reproducible deployments."
-  warn "         Continuing — assume this is a dev/lab environment."
+  if [ "$IS_PRODUCTION" = "1" ]; then
+    die "Refusing ':latest' on a production gateway. Pin an immutable release tag (for example v0.4.0)."
+  fi
+  warn "WARNING: ':latest' is allowed only for dev/lab gateways."
+  warn "         Pin to a specific version for reproducible production deployments."
 fi
 
 CURRENT=$(grep "image:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1 | sed 's/.*://g' | tr -d ' ' || echo "unknown")
@@ -64,6 +72,7 @@ echo ""
 echo "  EdgeViss Gateway Updater"
 echo "  Current : ${CURRENT}"
 echo "  Target  : ${TARGET}"
+echo "  Gateway : ${DEPLOY_ENV}"
 [ "$DRY_RUN" = "1" ] && echo "  Mode    : DRY RUN — no changes will be applied"
 echo ""
 
@@ -81,36 +90,49 @@ else
   warn "Continuing anyway (could be first run or already down)"
 fi
 
-# ── Step 1: Backup SQLite database ────────────────────────────────────────────
-step "Backing up database"
+# ── Step 1: Consistent SQLite backup ─────────────────────────────────────────
+# gateway-ui.db runs in WAL mode. Copying only the live .db file can produce a
+# logically incomplete pre-update backup because committed pages may still be in
+# gateway-ui.db-wal. Stop only the gateway API long enough for SQLite to close
+# cleanly, copy the quiesced DB, then restart the old container before pulling
+# or changing any image. Platform/Device Service containers stay running.
+step "Creating consistent pre-update database backup"
 BACKUP_DIR="$INSTALL_DIR/backups"
 BACKUP_FILE="$BACKUP_DIR/pre-update-$(date +%Y%m%d-%H%M%S)-from-${CURRENT}.db"
+BACKUP_OK=0
+WAS_RUNNING=0
 
 if [ "$DRY_RUN" = "0" ]; then
   mkdir -p "$BACKUP_DIR"
-  # Copy SQLite file directly from the running container's data volume
-  if docker cp "${CONTAINER}:/data/gateway-ui.db" "$BACKUP_FILE" 2>/dev/null; then
-    ok "Database backed up to $BACKUP_FILE"
-  else
-    # Container may not be running — try to copy from the volume directly
-    warn "Could not copy from running container, trying volume mount"
-    VOLUME_NAME=$(docker inspect "$CONTAINER" 2>/dev/null \
-      | grep -o '"gateway-data"' | head -1 || true)
-    if [ -n "$VOLUME_NAME" ]; then
-      docker run --rm \
-        -v "$(cd "$INSTALL_DIR" && docker compose -f docker-compose.yml config --volumes 2>/dev/null | head -1 || echo gateway-data):/data" \
-        alpine cp /data/gateway-ui.db "/backup/$(basename "$BACKUP_FILE")" 2>/dev/null \
-        && ok "Database backed up via volume" \
-        || warn "Backup failed — proceeding without backup (container may be down)"
-    else
-      warn "Container not running — skipping backup, proceeding with update"
+  if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" = "true" ] && WAS_RUNNING=1
+    if [ "$WAS_RUNNING" = "1" ]; then
+      docker stop -t 20 "$CONTAINER" >/dev/null 2>&1 \
+        || die "Could not stop $CONTAINER cleanly for the pre-update SQLite backup. Update aborted."
+    fi
+    if docker cp "${CONTAINER}:/data/gateway-ui.db" "$BACKUP_FILE" 2>/dev/null && [ -s "$BACKUP_FILE" ]; then
+      BACKUP_OK=1
+      ok "Consistent database backup saved to $BACKUP_FILE"
+    fi
+    if [ "$WAS_RUNNING" = "1" ]; then
+      docker start "$CONTAINER" >/dev/null 2>&1 \
+        || die "Backup completed, but the existing gateway could not be restarted. Investigate before updating."
     fi
   fi
-  # Keep only last 10 backups
+
+  if [ "$BACKUP_OK" != "1" ]; then
+    rm -f "$BACKUP_FILE" 2>/dev/null || true
+    if [ "$IS_PRODUCTION" = "1" ]; then
+      die "A consistent pre-update database backup could not be created. Production update aborted; current gateway left unchanged."
+    fi
+    warn "Could not create a consistent pre-update database backup (lab mode only — continuing without rollback DB)."
+  fi
+
+  # Keep only the newest 10 successful DB backups.
   ls -t "$BACKUP_DIR"/*.db 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
-  ok "Backup retention: keeping last 10 backups in $BACKUP_DIR"
+  [ "$BACKUP_OK" = "1" ] && ok "Backup retention: keeping newest 10 database backups in $BACKUP_DIR"
 else
-  ok "[dry-run] Would back up database to $BACKUP_FILE"
+  ok "[dry-run] Would stop the gateway API, copy a quiesced WAL-safe database backup, then restart the current gateway"
 fi
 
 # ── Step 2: Tag current image as rollback target ───────────────────────────────
@@ -163,6 +185,9 @@ fi
 # ── Step 4: Update image tag in compose ───────────────────────────────────────
 step "Updating version in docker-compose.yml"
 if [ "$DRY_RUN" = "0" ]; then
+  # Every compose edit below is checked before the restart; this copy is
+  # what the gateway comes back up on if the edited file does not validate.
+  cp "$INSTALL_DIR/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml.pre-update"
   sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
     "$INSTALL_DIR/docker-compose.yml" \
     || die "Failed to update docker-compose.yml"
@@ -207,29 +232,51 @@ if [ "$DRY_RUN" = "0" ]; then
     printf '\nEDGEVISS_HOST_INSTALL_DIR=%s\n' "$INSTALL_DIR" >> "$INSTALL_DIR/.env"
     ok "Added EDGEVISS_HOST_INSTALL_DIR to .env"
   fi
-  if ! grep -q '^DOCKER_GID=' "$INSTALL_DIR/.env" 2>/dev/null; then
-    RETRO_DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null \
-      || getent group docker 2>/dev/null | cut -d: -f3 || echo "0")
-    printf 'DOCKER_GID=%s\n' "$RETRO_DOCKER_GID" >> "$INSTALL_DIR/.env"
-    ok "Added DOCKER_GID to .env"
-  fi
   if ! grep -q '^CONNECTOR_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null; then
     RETRO_CONNECTOR_TOKEN=$(openssl rand -hex 24 2>/dev/null \
       || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null || echo "")
     printf 'CONNECTOR_TOKEN=%s\n' "$RETRO_CONNECTOR_TOKEN" >> "$INSTALL_DIR/.env"
     ok "Added CONNECTOR_TOKEN to .env"
   fi
+  if ! grep -q '^CONNECTOR_LOCAL_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    RETRO_CONNECTOR_LOCAL_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+      || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null || echo "")
+    printf 'CONNECTOR_LOCAL_TOKEN=%s\n' "$RETRO_CONNECTOR_LOCAL_TOKEN" >> "$INSTALL_DIR/.env"
+    ok "Added CONNECTOR_LOCAL_TOKEN to .env (gateway-ui-api is now the sole Cloud-facing command consumer -- the connector service in docker-compose.yml reads the same value)"
+  fi
 
-  if grep -q '/var/run/docker.sock:/var/run/docker.sock' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-    ok "Docker socket already mounted"
-  elif grep -q '^\(\s*\)- /dev:/host/dev:ro' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-    sed -i 's|^\(\s*\)- /dev:/host/dev:ro|\1- /dev:/host/dev:ro\n\1- /var/run/docker.sock:/var/run/docker.sock\n\1- '"$INSTALL_DIR"':'"$INSTALL_DIR"'\n\1- /etc/systemd/system:/host-systemd\n\1- /usr/lib/systemd/system:/host-systemd-lib:ro|' \
-      "$INSTALL_DIR/docker-compose.yml" \
-      && ok "Added docker.sock, install-dir, and systemd mounts for self-update / Reboot Host / autostart" \
-      || warn "Could not patch docker-compose.yml — self-update, Reboot Host, and autostart will 503 until this is added manually"
+  # gateway-ui-api no longer needs docker.sock at all -- self-update and
+  # Reboot Host both now forward to the edgeviss-connector sidecar's own
+  # Docker-privileged local API instead (the "connector" compose service,
+  # CONNECTOR_LOCAL_URL/CONNECTOR_LOCAL_TOKEN below). This gateway remains
+  # unprivileged with respect to Docker either way -- fresh installs never
+  # get the socket mounted; a gateway that got it from an OLDER run of this
+  # script has it actively removed here.
+  # Scoped to the gateway service only: the connector service legitimately
+  # mounts docker.sock, and a file-wide delete left it with an empty
+  # volumes: list that failed compose validation and stopped the gateway.
+  GW_SOCK_AWK='/^  [A-Za-z0-9_-]+:[[:space:]]*$/ { svc=$1 } svc=="gateway:" && /^[[:space:]]*- \/var\/run\/docker\.sock:\/var\/run\/docker\.sock[[:space:]]*$/'
+  if awk "$GW_SOCK_AWK { found=1 } END { exit !found }" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    if awk "$GW_SOCK_AWK { next } { print }" "$INSTALL_DIR/docker-compose.yml" > "$INSTALL_DIR/docker-compose.yml.tmp"       && mv "$INSTALL_DIR/docker-compose.yml.tmp" "$INSTALL_DIR/docker-compose.yml"; then
+      ok "Removed docker.sock mount from gateway-ui-api -- self-update and Reboot Host now go through the Connector sidecar"
+      warn "This gateway may still have a now-unused install-dir bind mount and/or group_add left over from an older update -- safe to remove by hand from docker-compose.yml (see deploy/install.sh for the current, clean shape), not required for correctness"
+    else
+      warn "Could not automatically remove the old docker.sock mount from docker-compose.yml -- gateway-ui-api will keep unused Docker access until this line is removed by hand: '- /var/run/docker.sock:/var/run/docker.sock'"
+    fi
   else
-    warn "Could not locate /dev mount anchor in docker-compose.yml — skipping self-update/host-management mounts"
-    warn "Self-update, Reboot Host, and autostart will 503 until docker.sock and the systemd mounts are added manually (see deploy/install.sh)"
+    ok "gateway-ui-api has no docker.sock mount"
+  fi
+
+  if grep -q '^\s*- /etc/systemd/system:/host-systemd\s*$' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    ok "host-systemd mounts already present (needed by the autostart toggle)"
+  elif grep -q '^\(\s*\)- /dev:/host/dev:ro' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    sed -i 's|^\(\s*\)- /dev:/host/dev:ro|\1- /dev:/host/dev:ro\n\1- /etc/systemd/system:/host-systemd\n\1- /usr/lib/systemd/system:/host-systemd-lib:ro|' \
+      "$INSTALL_DIR/docker-compose.yml" \
+      && ok "Added systemd mounts for the autostart toggle" \
+      || warn "Could not patch docker-compose.yml — the autostart toggle will 503 until the host-systemd mounts are added manually"
+  else
+    warn "Could not locate /dev mount anchor in docker-compose.yml — skipping autostart's host-systemd mounts"
+    warn "The autostart toggle will 503 until the systemd mounts are added manually (see deploy/install.sh)"
   fi
 
   if grep -q 'EDGEVISS_CONNECTOR_TOKEN:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
@@ -243,13 +290,25 @@ if [ "$DRY_RUN" = "0" ]; then
     warn "Could not locate an anchor line to wire EDGEVISS_HOST_INSTALL_DIR/EDGEVISS_CONNECTOR_TOKEN into docker-compose.yml"
   fi
 
-  if grep -q '^\(\s*\)group_add:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-    ok "group_add already present"
-  elif grep -q '^\(\s*\)healthcheck:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-    sed -i 's|^\(\s*\)healthcheck:|\1group_add:\n\1  - "${DOCKER_GID:-0}"\n\1healthcheck:|' \
+  if grep -q 'CONNECTOR_LOCAL_TOKEN:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    ok "CONNECTOR_LOCAL_TOKEN already wired into docker-compose.yml"
+  elif grep -q '^\(\s*\)EDGEVISS_CONNECTOR_TOKEN:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    sed -i 's|^\(\s*\)EDGEVISS_CONNECTOR_TOKEN:.*$|&\n\1CONNECTOR_LOCAL_URL: ${CONNECTOR_LOCAL_URL:-http://edgeviss-connector:8090}\n\1CONNECTOR_LOCAL_TOKEN: ${CONNECTOR_LOCAL_TOKEN:-}|' \
       "$INSTALL_DIR/docker-compose.yml" \
-      && ok "Added group_add so the non-root gateway user can actually use docker.sock" \
-      || warn "Could not add group_add — docker.sock calls will get permission denied"
+      && ok "Wired CONNECTOR_LOCAL_URL/CONNECTOR_LOCAL_TOKEN into the gateway's environment (gateway-ui-api is now the sole Cloud-facing command consumer)" \
+      || warn "Could not wire CONNECTOR_LOCAL_URL/CONNECTOR_LOCAL_TOKEN into docker-compose.yml — deployment dispatch to the optional Connector will fail closed until this is added manually"
+  else
+    warn "Could not locate an anchor line to wire CONNECTOR_LOCAL_URL/CONNECTOR_LOCAL_TOKEN into docker-compose.yml"
+  fi
+
+  # group_add existed only to let the non-root gateway user access
+  # docker.sock -- now unnecessary (see the docker.sock removal above), and
+  # no longer added by a fresh install either. Left in place if present
+  # (harmless without the socket mount) rather than risking an automated
+  # multi-line removal against a production file; flagged for manual
+  # cleanup, same as the install-dir bind mount above.
+  if grep -q '^\(\s*\)group_add:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    warn "This gateway has a now-unnecessary 'group_add: [\${DOCKER_GID:-0}]' left over from an older update -- harmless without the docker.sock mount, safe to remove by hand"
   fi
 
   # Installs from before the timezone mount existed run on UTC wall-clock
@@ -268,14 +327,173 @@ if [ "$DRY_RUN" = "0" ]; then
     warn "Could not locate /dev mount anchor in docker-compose.yml — skipping timezone mount"
     warn "Scheduled Reboot will keep firing on UTC time until /etc/localtime is mounted manually (see deploy/install.sh)"
   fi
+
+  # Installs from before ALARM_INGEST_URL was added to install.sh have no
+  # value for it in .env, so the gateway binary falls back to its compiled-in
+  # default "http://gateway-ui-api:8080" -- which does not resolve on the
+  # real docker-compose network, where this container is named
+  # "edgeviss-gateway" (see docker-compose.yml's container_name below).
+  # Confirmed live on 3 of 4 fleet gateways audited (2026-08-31): every
+  # eKuiper alarm rule's REST sink was failing 100% of the time
+  # (records_out_total: 0, exceptions_total = every record, error "lookup
+  # gateway-ui-api ... no such host") -- meaning NO alarm setpoint, digital
+  # or analog, had ever actually reached EdgeViss's evaluator on those
+  # gateways, silently, since the day they were commissioned. A real digital
+  # HIGHTEMPAL trip on a fielded gateway confirmed this: EdgeX recorded the true/false
+  # transition correctly, but zero alarm_event was ever created because the
+  # eKuiper sink couldn't reach the backend at all.
+  if grep -q '^ALARM_INGEST_URL=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    ok "ALARM_INGEST_URL already present"
+  else
+    echo "ALARM_INGEST_URL=http://edgeviss-gateway:${PORT:-8080}" >> "$INSTALL_DIR/.env" \
+      && ok "Added ALARM_INGEST_URL — alarm evaluation can now actually reach this gateway (was silently 0% delivered before)" \
+      || warn "Could not add ALARM_INGEST_URL to .env — alarm evaluation will keep silently failing until this is added manually"
+    warn "Existing eKuiper alarm rules baked in the old (broken) URL at creation time -- restart the gateway container, then re-run 'Ensure eKuiper Stream' (Alarms module) or recreate affected rules so they pick up the fix"
+  fi
+
+  # Batch 5C made /api/alarms/ingest, /api/alarms/evaluate, and
+  # /api/sparkplug/ingest fail closed (503) in production when
+  # ALARM_INGEST_TOKEN is unset -- a real, deliberate security fix, but one
+  # that can silently break alarm ingest on an existing production gateway
+  # the moment it upgrades to this version, with no actionable warning if
+  # left unhandled (Pre-Batch-6 Gate A). Two distinct .env shapes both count
+  # as "genuinely absent" here and both are handled: the key missing
+  # entirely (older installs, before ALARM_INGEST_TOKEN existed in
+  # install.sh at all) AND the key present with an empty value (every
+  # install between Batch 5C's route change and this retrofit landing --
+  # deploy/.env.example and pre-5C install.sh both ship the bare
+  # "ALARM_INGEST_TOKEN=" line). `grep -q '^ALARM_INGEST_TOKEN='` alone
+  # would match the second shape and skip it, silently leaving the token
+  # empty -- this checks the actual VALUE, not just whether the key exists.
+  #
+  # Auto-generating here (not just warning) follows the exact precedent
+  # already set for CONNECTOR_TOKEN/CONNECTOR_LOCAL_TOKEN above: a
+  # genuinely-empty security token is filled in with fresh cryptographic
+  # randomness, same as those. This is filling in an unset value, not
+  # rotating an existing secret -- if ALARM_INGEST_TOKEN already has ANY
+  # non-empty value, it is never touched.
+  EXISTING_ALARM_TOKEN=$(grep '^ALARM_INGEST_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+  if [ -n "$EXISTING_ALARM_TOKEN" ]; then
+    ok "ALARM_INGEST_TOKEN already configured -- left unchanged"
+  else
+    RETRO_ALARM_INGEST_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+      || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null || echo "")
+    if grep -q '^ALARM_INGEST_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null; then
+      sed -i "s|^ALARM_INGEST_TOKEN=.*|ALARM_INGEST_TOKEN=${RETRO_ALARM_INGEST_TOKEN}|" "$INSTALL_DIR/.env"
+    else
+      printf 'ALARM_INGEST_TOKEN=%s\n' "$RETRO_ALARM_INGEST_TOKEN" >> "$INSTALL_DIR/.env"
+    fi
+    ok "Generated ALARM_INGEST_TOKEN (was unset) -- required for /api/alarms/ingest, /api/alarms/evaluate, and /api/sparkplug/ingest to accept requests once GATEWAY_ENV=production"
+    if grep -q '^GATEWAY_ENV=production' "$INSTALL_DIR/.env" 2>/dev/null; then
+      warn "GATEWAY_ENV=production: alarm/Sparkplug ingest would have started returning 503 on every request after this upgrade without this token. A token has been generated automatically, but every EXISTING eKuiper alarm/export rule was built without the X-Alarm-Token header -- restart the gateway container, then re-run 'Ensure eKuiper Stream' (Alarms module) and recreate/re-save affected export rules so they pick up the header, the same remediation as the ALARM_INGEST_URL fix above."
+    else
+      warn "ALARM_INGEST_TOKEN was unset and has been generated -- if this gateway later switches to GATEWAY_ENV=production, existing eKuiper alarm/export rules will need to be recreated/re-saved to include the X-Alarm-Token header (same remediation as the ALARM_INGEST_URL fix above)."
+    fi
+  fi
 else
-  ok "[dry-run] Would ensure self-update/host-management .env vars, mounts, group_add, and timezone mount are present"
+  ok "[dry-run] Would ensure self-update/host-management .env vars, mounts, group_add, timezone mount, ALARM_INGEST_URL, and ALARM_INGEST_TOKEN are present"
 fi
+
+# ── Step 4a3: Connector service + host facts mounts ───────────────────────────
+# Installs made before the connector became a compose service (and before
+# gateway health read host facts) lack both. Add them in place, then move the
+# connector to the target version only when that image is actually pullable,
+# so a connector registry problem can never fail or roll back the gateway.
+step "Ensuring connector service and host facts mounts"
+CONNECTOR_IMAGE="${REGISTRY}/${IMAGE}-connector"
+if [ "$DRY_RUN" = "0" ]; then
+  COMPOSE_YML="$INSTALL_DIR/docker-compose.yml"
+  if grep -q '/host/proc' "$COMPOSE_YML" 2>/dev/null; then
+    ok "Host facts mounts already present"
+  elif grep -q '^\s*- /dev:/host/dev:ro' "$COMPOSE_YML" 2>/dev/null; then
+    sed -i 's|^\(\s*\)- /dev:/host/dev:ro|\1- /dev:/host/dev:ro\n\1- /etc/hostname:/host/etc/hostname:ro\n\1- /proc:/host/proc:ro\n\1- /sys:/host/sys:ro|' "$COMPOSE_YML" \
+      && ok "Added read-only host hostname, /proc and /sys mounts (gateway health reports the host)" \
+      || warn "Could not add host facts mounts — gateway health will report container values"
+  else
+    warn "No /dev mount anchor in docker-compose.yml — skipping host facts mounts"
+  fi
+
+  if grep -q '^  connector:' "$COMPOSE_YML" 2>/dev/null; then
+    ok "Connector service already in docker-compose.yml"
+  else
+    CONNECTOR_NET=""
+    grep -q 'edgeviss-platform-network' "$COMPOSE_YML" 2>/dev/null && CONNECTOR_NET="    networks:
+      - edgeviss-platform-network"
+    CONNECTOR_BLOCK="  connector:
+    image: ${CONNECTOR_IMAGE}:${CURRENT}
+    container_name: edgeviss-connector
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: \"10m\"
+        max-file: \"3\"
+    environment:
+      CONNECTOR_LISTEN_ADDR: \":8090\"
+      CONNECTOR_LOCAL_TOKEN: \${CONNECTOR_LOCAL_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/systemd/system:/host-systemd
+      - /usr/lib/systemd/system:/host-systemd-lib:ro
+${CONNECTOR_NET}
+"
+    # Insert before the top-level volumes: key (end of services:).
+    if CB="$CONNECTOR_BLOCK" awk '/^volumes:/ && !done { printf "%s\n", ENVIRON["CB"]; done=1 } { print }' "$COMPOSE_YML" > "$COMPOSE_YML.tmp" \
+      && grep -q '^  connector:' "$COMPOSE_YML.tmp"; then
+      mv "$COMPOSE_YML.tmp" "$COMPOSE_YML"
+      ok "Added connector service to docker-compose.yml"
+    else
+      rm -f "$COMPOSE_YML.tmp"
+      warn "Could not add the connector service — in-UI updates and reboots stay unavailable (see deploy/install.sh)"
+    fi
+  fi
+
+  # Start on boot moved into the connector (root); older connector services
+  # lack the systemd mounts it needs.
+  CONN_SYSD_AWK='/^  [A-Za-z0-9_-]+:[[:space:]]*$/ { svc=$1 } svc=="connector:" && /\/host-systemd:?/ { found=1 } END { exit !found }'
+  if grep -q '^  connector:' "$COMPOSE_YML" && ! awk "$CONN_SYSD_AWK" "$COMPOSE_YML"; then
+    if awk '/^  [A-Za-z0-9_-]+:[[:space:]]*$/ { svc=$1 } { print } svc=="connector:" && /^[[:space:]]*- \/var\/run\/docker\.sock:\/var\/run\/docker\.sock[[:space:]]*$/ { match($0, /^[[:space:]]*/); ind=substr($0, 1, RLENGTH); print ind "- /etc/systemd/system:/host-systemd"; print ind "- /usr/lib/systemd/system:/host-systemd-lib:ro" }' "$COMPOSE_YML" > "$COMPOSE_YML.tmp"       && awk "$CONN_SYSD_AWK" "$COMPOSE_YML.tmp"; then
+      mv "$COMPOSE_YML.tmp" "$COMPOSE_YML"
+      ok "Gave the connector the systemd mounts Start on boot needs"
+    else
+      rm -f "$COMPOSE_YML.tmp"
+      warn "Could not add systemd mounts to the connector — Start on boot stays unavailable"
+    fi
+  fi
+
+  if docker pull "${CONNECTOR_IMAGE}:${TARGET}" >/dev/null 2>&1 || docker image inspect "${CONNECTOR_IMAGE}:${TARGET}" >/dev/null 2>&1; then
+    sed -i "s|image: ${CONNECTOR_IMAGE}:.*|image: ${CONNECTOR_IMAGE}:${TARGET}|" "$COMPOSE_YML"
+    ok "Connector set to $TARGET"
+  else
+    warn "Connector image ${CONNECTOR_IMAGE}:${TARGET} is not pullable — keeping the connector on its current image"
+  fi
+else
+  ok "[dry-run] Would ensure the connector service and host facts mounts"
+fi
+
+# compose_up starts every service; a connector whose image is not available
+# locally is left out so it cannot fail the gateway update.
+compose_up() {
+  set -- up -d --remove-orphans
+  [ -f "$INSTALL_DIR/platform-compose.yml" ] && CF="-f platform-compose.yml -f docker-compose.yml" || CF=""
+  CONN_REF=$(sed -n "s|^\s*image: \(${CONNECTOR_IMAGE}:.*\)$|\1|p" "$INSTALL_DIR/docker-compose.yml" | head -1)
+  if [ -n "$CONN_REF" ] && ! docker image inspect "$CONN_REF" >/dev/null 2>&1 && ! docker pull "$CONN_REF" >/dev/null 2>&1; then
+    warn "Connector image $CONN_REF unavailable — starting everything else"
+    # shellcheck disable=SC2086
+    docker compose $CF "$@" $(docker compose $CF config --services | grep -vx connector)
+  else
+    # shellcheck disable=SC2086
+    docker compose $CF "$@"
+  fi
+}
 
 # ── Step 4b: Sync platform-compose.yml (protocol drivers + platform services) ─
 # The gateway image bundles the matching platform-compose.yml at build time.
 # Extract it so the platform stack always stays in sync with the gateway version.
 PLATFORM_COMPOSE="$INSTALL_DIR/platform-compose.yml"
+# Remember the internal message broker's container so Step 5 can tell whether
+# this update recreated it (see the stream-engine reconnect there).
+BROKER_ID_BEFORE=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
 if [ -f "$PLATFORM_COMPOSE" ]; then
   step "Syncing platform-compose.yml from new gateway image"
   if [ "$DRY_RUN" = "0" ]; then
@@ -352,6 +570,24 @@ if [ "$DRY_RUN" = "0" ] && docker network inspect "$PLATFORM_NETWORK" >/dev/null
   fi
 fi
 
+# ── Step 4c2: Remote Access capability flag ────────────────────────────────────
+# FEATURE_REMOTE_ACCESS defaults to false in the binary and older compose files
+# never set it, so Manager Remote Access sessions were refused silently
+# (reported "failed") on installs made by install.sh. The .env reaches the
+# gateway through env_file; the System toggle and Manager credentials still
+# gate every tunnel.
+step "Ensuring Remote Access capability"
+if [ "$DRY_RUN" = "0" ]; then
+  if grep -q '^FEATURE_REMOTE_ACCESS=' "$INSTALL_DIR/.env" 2>/dev/null || grep -q 'FEATURE_REMOTE_ACCESS:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+    ok "Remote Access capability already configured"
+  else
+    printf '\n# Cloud Remote Access capability (System toggle + Manager credentials still gate it)\nFEATURE_REMOTE_ACCESS=true\n' >> "$INSTALL_DIR/.env"
+    ok "Enabled the Remote Access capability in .env"
+  fi
+else
+  ok "[dry-run] Would ensure FEATURE_REMOTE_ACCESS is set"
+fi
+
 # ── Step 4d: Ensure Docker log rotation (prevent /var filling the root disk) ───
 # Found live on a fielded Pi gateway: with no log-driver
 # config anywhere, dockerd defaults to json-file with NO size cap, so a noisy
@@ -410,9 +646,9 @@ with open(path, 'w') as f:
         ok "Restarted dockerd to apply log rotation (existing container logs are NOT retroactively truncated by this alone)"
         # Existing json-file logs already on disk keep growing under the
         # OLD unbounded behavior until Docker itself rotates them on next
-        # write past the new cap -- for a host that's already near-full
-        # (a disk that had already filled), truncate now so the fix has effect immediately
-        # rather than waiting for organic rotation.
+        # write past the new cap -- for a host that's already near-full,
+        # truncate now so the fix has effect immediately rather than
+        # waiting for organic rotation.
         sudo find /var/lib/docker/containers/ -name '*-json.log' -size +10M -exec truncate -s 0 {} \; 2>/dev/null \
           && ok "Truncated existing oversized container logs (>10MB) to apply the new cap immediately" \
           || true
@@ -465,6 +701,31 @@ if [ "$DRY_RUN" = "0" ]; then
   fi
 fi
 
+# Installs from before AUTO_BACKUP_DIR was pinned to /data/backups (see
+# deploy/Dockerfile) had auto-backups silently written under /app/backups --
+# the OLD container's ephemeral layer, not the persistent /data volume. This
+# is the one chance to rescue them: once the container below is recreated
+# from the new image, that ephemeral layer is gone for good. Best-effort only
+# -- a fresh install, or a gateway that never enabled Auto Backup, has
+# nothing at /app/backups and both commands below just no-op.
+step "Rescuing any auto-backups from the old container's ephemeral storage"
+if [ "$DRY_RUN" = "0" ]; then
+  RESCUE_TMP=$(mktemp -d)
+  if docker cp "${CONTAINER}:/app/backups" "$RESCUE_TMP/backups" 2>/dev/null \
+    && [ -n "$(ls -A "$RESCUE_TMP/backups" 2>/dev/null)" ]; then
+    if docker cp "$RESCUE_TMP/backups/." "${CONTAINER}:/data/backups/" 2>/dev/null; then
+      ok "Rescued pre-existing auto-backups into the persistent /data/backups volume"
+    else
+      warn "Found old auto-backups at /app/backups but could not copy them into /data/backups -- they will be lost on restart"
+    fi
+  else
+    ok "No pre-existing auto-backups found under the old ephemeral path — nothing to rescue"
+  fi
+  rm -rf "$RESCUE_TMP"
+else
+  ok "[dry-run] Would rescue any auto-backups from /app/backups into /data/backups before restart"
+fi
+
 # ── Step 5: Restart ────────────────────────────────────────────────────────────
 step "Restarting gateway"
 if [ "$DRY_RUN" = "0" ]; then
@@ -472,12 +733,25 @@ if [ "$DRY_RUN" = "0" ]; then
   # Always include platform-compose.yml when it exists so both stacks share the
   # same Docker Compose project name. Without this, the gateway and the platform
   # resolve to different project prefixes and volumes can mismatch.
-  if [ -f "$INSTALL_DIR/platform-compose.yml" ]; then
-    docker compose -f platform-compose.yml -f docker-compose.yml up -d --remove-orphans || die "docker compose up failed"
-  else
-    docker compose up -d --remove-orphans || die "docker compose up failed"
+  if [ -f "$INSTALL_DIR/platform-compose.yml" ]; then VCF="-f platform-compose.yml -f docker-compose.yml"; else VCF=""; fi
+  # shellcheck disable=SC2086
+  if ! docker compose $VCF config -q; then
+    err "Edited docker-compose.yml does not validate — restoring the pre-update file and restarting the current version"
+    cp "$INSTALL_DIR/docker-compose.yml.pre-update" "$INSTALL_DIR/docker-compose.yml"
+    compose_up || true
+    die "Update aborted before restart; gateway kept on $CURRENT"
   fi
+  compose_up || die "docker compose up failed"
   ok "Container started"
+  # The stream engine's shared platform source does not reconnect when the
+  # internal message broker container is recreated under it: every export
+  # and alarm rule keeps showing "running" while receiving nothing (found
+  # live on a fielded gateway -- northbound publishing stopped silently after an update
+  # recreated platform-broker). Restart it whenever the broker changed.
+  BROKER_ID_AFTER=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
+  if [ -n "$BROKER_ID_BEFORE" ] && [ "$BROKER_ID_BEFORE" != "$BROKER_ID_AFTER" ] && docker inspect platform-rules >/dev/null 2>&1; then
+    docker restart platform-rules >/dev/null 2>&1       && ok "Message broker was recreated — restarted the stream engine so exports and alarms reconnect"       || warn "Message broker was recreated but the stream engine could not be restarted — run: docker restart platform-rules"
+  fi
 else
   ok "[dry-run] Would restart container"
   echo ""
@@ -504,17 +778,39 @@ else
   err "Health check failed after 60s — rolling back to ${CURRENT}"
   echo ""
 
-  # Auto-rollback: restore previous compose tag and restart
+  # Auto-rollback: restore the pre-update DB (if captured), restore the
+  # previous immutable image tag, then bring the exact same compose pair back.
   if docker image inspect "${REGISTRY}/${IMAGE}:rollback" >/dev/null 2>&1; then
-    sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:rollback|g" \
+    docker stop -t 20 "$CONTAINER" >/dev/null 2>&1 || true
+
+    DB_RESTORED=0
+    if [ "$BACKUP_OK" = "1" ] && [ -s "$BACKUP_FILE" ]; then
+      # Use the known-old image as a short-lived helper so the restored DB is
+      # written as the normal non-root gateway user. Remove WAL/SHM first so
+      # pages written by the failed new version cannot be replayed onto the
+      # restored pre-update database.
+      if docker run --rm --volumes-from "$CONTAINER" \
+          -v "$BACKUP_DIR:/backup:ro" \
+          --entrypoint sh "${REGISTRY}/${IMAGE}:rollback" \
+          -c "rm -f /data/gateway-ui.db /data/gateway-ui.db-wal /data/gateway-ui.db-shm && cp '/backup/$(basename "$BACKUP_FILE")' /data/gateway-ui.db" >/dev/null 2>&1; then
+        DB_RESTORED=1
+        err "Restored pre-update database before rollback"
+      else
+        err "WARNING: could not restore pre-update database automatically; old binary may see schema changes made by the failed release"
+      fi
+    fi
+
+    sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${CURRENT}|g" \
       "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
-    docker compose up -d --remove-orphans 2>/dev/null || true
+    cd "$INSTALL_DIR"
+    compose_up 2>/dev/null || true
     err "Rolled back to $CURRENT"
+    [ "$BACKUP_OK" = "1" ] && err "Pre-update backup: $BACKUP_FILE"
+    [ "$BACKUP_OK" = "1" ] && [ "$DB_RESTORED" != "1" ] && err "Database restore requires manual verification before returning this gateway to service"
     err "Investigate with: docker logs $CONTAINER"
-    err "Backup saved at:  $BACKUP_FILE"
   else
     err "No rollback image available — manual intervention required"
-    err "Run: docker compose down && edit docker-compose.yml manually"
+    err "Edit docker-compose.yml back to the previous immutable tag and restore $BACKUP_FILE if the failed release changed the database."
   fi
 
   exit 1
@@ -525,8 +821,12 @@ echo ""
 echo "  Update complete."
 echo ""
 echo "  Version : $TARGET"
-echo "  Backup  : $BACKUP_FILE"
-echo "  Rollback: ./update.sh rollback  (uses the :rollback tag saved above)"
+if [ "$BACKUP_OK" = "1" ]; then
+  echo "  Backup  : $BACKUP_FILE"
+else
+  echo "  Backup  : NOT CREATED (lab mode only)"
+fi
+echo "  Rollback: re-run this updater with the prior immutable version tag if manual rollback is needed"
 echo ""
 echo "  If anything looks wrong:"
 echo "    docker logs $CONTAINER"
