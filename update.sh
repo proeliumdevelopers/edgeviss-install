@@ -502,7 +502,7 @@ if [ -f "$PLATFORM_COMPOSE" ]; then
         /platform-compose.yml > "$PLATFORM_COMPOSE.new" 2>/dev/null \
         && [ -s "$PLATFORM_COMPOSE.new" ]; then
       mv "$PLATFORM_COMPOSE.new" "$PLATFORM_COMPOSE"
-      ok "platform-compose.yml updated from v$TARGET image"
+      ok "platform-compose.yml updated from the $TARGET image"
       # Start any new platform services added in this release (no restart of existing)
       MIRROR_REGISTRY="${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}"
       docker compose -f "$PLATFORM_COMPOSE" pull --ignore-pull-failures 2>/dev/null || true
@@ -586,6 +586,33 @@ if [ "$DRY_RUN" = "0" ]; then
   fi
 else
   ok "[dry-run] Would ensure FEATURE_REMOTE_ACCESS is set"
+fi
+
+# ── Step 4c3: Docker starts at boot ────────────────────────────────────────────
+step "Ensuring Docker starts at boot"
+if [ "$DRY_RUN" = "0" ]; then
+# Docker must start at boot: every EdgeVISS container has
+# restart: unless-stopped, but with docker.service disabled (socket
+# activation only) nothing starts dockerd after a reboot, so the gateway
+# stays down until someone runs a docker command (found on a fielded
+# gateway after its nightly scheduled reboot).
+  if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl is-enabled docker 2>/dev/null)" != "enabled" ]; then
+    if systemctl enable docker >/dev/null 2>&1; then
+    ok "Enabled Docker at boot so EdgeVISS comes back after every reboot"
+  else
+    warn "Could not enable Docker at boot — after a reboot EdgeVISS stays down until: sudo systemctl start docker (fix: sudo systemctl enable docker)"
+  fi
+fi
+else
+  ok "[dry-run] Would ensure docker.service is enabled at boot"
+fi
+
+# A legacy Node-RED left running beside EdgeVISS polls the same RS-485 bus:
+# two Modbus RTU masters corrupt each other's frames ("unexpected EOF",
+# missing readings). It is never stopped automatically -- it may still be
+# someone's live flow -- but it is reported every time.
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nodered 2>/dev/null; then
+  warn "Node-RED is running on this gateway. If it still polls the same devices as EdgeVISS, they collide: on a serial (RS-485) bus frames get corrupted, and Modbus TCP devices that accept only one connection (common for battery and UPS controllers) refuse EdgeVISS entirely, so readings stop. Stop it once EdgeVISS has taken over: sudo systemctl disable --now nodered"
 fi
 
 # ── Step 4d: Ensure Docker log rotation (prevent /var filling the root disk) ───
@@ -749,8 +776,19 @@ if [ "$DRY_RUN" = "0" ]; then
   # live on a fielded gateway -- northbound publishing stopped silently after an update
   # recreated platform-broker). Restart it whenever the broker changed.
   BROKER_ID_AFTER=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
-  if [ -n "$BROKER_ID_BEFORE" ] && [ "$BROKER_ID_BEFORE" != "$BROKER_ID_AFTER" ] && docker inspect platform-rules >/dev/null 2>&1; then
-    docker restart platform-rules >/dev/null 2>&1       && ok "Message broker was recreated — restarted the stream engine so exports and alarms reconnect"       || warn "Message broker was recreated but the stream engine could not be restarted — run: docker restart platform-rules"
+  if [ -n "$BROKER_ID_BEFORE" ] && [ "$BROKER_ID_BEFORE" != "$BROKER_ID_AFTER" ] ; then
+    BROKER_STARTED=$(docker inspect -f '{{.State.StartedAt}}' platform-broker 2>/dev/null || echo "")
+    RECONNECTED=""
+    for c in $(docker network inspect edgeviss-platform-network --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null); do
+      [ "$c" = "platform-broker" ] && continue
+      c_started=$(docker inspect -f '{{.State.StartedAt}}' "$c" 2>/dev/null || echo "")
+      # started before the new broker => still holding the dead connection
+      if [ -n "$c_started" ] && [ "$c_started" != "$BROKER_STARTED" ] && \
+         [ "$(printf '%s\n%s\n' "$c_started" "$BROKER_STARTED" | sort | head -1)" = "$c_started" ]; then
+        docker restart "$c" >/dev/null 2>&1 && RECONNECTED="$RECONNECTED $c"
+      fi
+    done
+    [ -n "$RECONNECTED" ] && ok "Message broker was recreated — restarted services still on the old connection:$RECONNECTED"
   fi
 else
   ok "[dry-run] Would restart container"

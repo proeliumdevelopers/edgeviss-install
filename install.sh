@@ -67,10 +67,23 @@ fi
 if [ "$VERSION" = "latest" ]; then
   _GHCR_TOKEN=$(curl -fsSL -m 15 "https://ghcr.io/token?scope=repository:${EDGEVISS_REGISTRY_REPO:-proeliumdevelopers/edgeviss}:pull" 2>/dev/null \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-  _LATEST=$(curl -fsSL -m 15 -H "Authorization: Bearer ${_GHCR_TOKEN}" \
+  # Newest first; a release counts only once its connector image is
+  # published too (the two images are pushed one after the other).
+  _CONN_REPO="${EDGEVISS_REGISTRY_REPO:-proeliumdevelopers/edgeviss}-connector"
+  _CONN_TOKEN=$(curl -fsSL -m 15 "https://ghcr.io/token?scope=repository:${_CONN_REPO}:pull" 2>/dev/null \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  _LATEST=""
+  for _TAG in $(curl -fsSL -m 15 -H "Authorization: Bearer ${_GHCR_TOKEN}" \
       "https://ghcr.io/v2/${EDGEVISS_REGISTRY_REPO:-proeliumdevelopers/edgeviss}/tags/list?n=1000" 2>/dev/null \
     | tr ',' '\n' | tr -d '"[]{} ' | sed 's/^tags://' \
-    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV | head -5); do
+    if curl -fsS -m 15 -o /dev/null -H "Authorization: Bearer ${_CONN_TOKEN}" \
+        -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+        "https://ghcr.io/v2/${_CONN_REPO}/manifests/${_TAG}" 2>/dev/null; then
+      _LATEST="$_TAG"
+      break
+    fi
+  done
   if [ -n "$_LATEST" ]; then
     VERSION="$_LATEST"
     printf "Newest released version: %s\n" "$VERSION"
@@ -227,18 +240,52 @@ if ! docker info >/dev/null 2>&1; then
   ok "Docker service started"
 fi
 
-DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oP '[\d.]+' | head -1)
+# Docker must start at boot: every EdgeVISS container has
+# restart: unless-stopped, but with docker.service disabled (socket
+# activation only) nothing starts dockerd after a reboot, so the gateway
+# stays down until someone runs a docker command (found on a fielded
+# gateway after its nightly scheduled reboot).
+if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl is-enabled docker 2>/dev/null)" != "enabled" ]; then
+  if systemctl enable docker >/dev/null 2>&1; then
+    ok "Enabled Docker at boot so EdgeVISS comes back after every reboot"
+  else
+    warn "Could not enable Docker at boot — after a reboot EdgeVISS stays down until: sudo systemctl start docker (fix: sudo systemctl enable docker)"
+  fi
+fi
+
+# A legacy Node-RED left running beside EdgeVISS polls the same RS-485 bus:
+# two Modbus RTU masters corrupt each other's frames ("unexpected EOF",
+# missing readings). It is never stopped automatically -- it may still be
+# someone's live flow -- but it is reported every time.
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nodered 2>/dev/null; then
+  warn "Node-RED is running on this gateway. If it still polls the same devices as EdgeVISS, they collide: on a serial (RS-485) bus frames get corrupted, and Modbus TCP devices that accept only one connection (common for battery and UPS controllers) refuse EdgeVISS entirely, so readings stop. Stop it once EdgeVISS has taken over: sudo systemctl disable --now nodered"
+fi
+
+DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
 ok "Docker version: $DOCKER_VERSION"
 
-# Check docker compose (plugin or standalone)
-if docker compose version >/dev/null 2>&1; then
-  COMPOSE="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE="docker-compose"
-else
-  err "Docker Compose is required. Install the Docker Compose plugin and re-run."
+# Docker Compose v2 ("docker compose") is required. The legacy Python
+# docker-compose 1.x crashes against current Docker ("KeyError:
+# 'ContainerConfig'" when recreating a container) and cannot read the labels
+# v2 writes, so it is never used. When the plugin is missing (e.g. apt's
+# docker.io, or Docker Desktop's WSL integration running as root), the
+# official plugin binary is installed.
+COMPOSE_V2_VERSION="${EDGEVISS_COMPOSE_VERSION:-v2.29.7}"
+if ! docker compose version >/dev/null 2>&1; then
+  case "$(uname -m)" in
+    x86_64|amd64)  COMPOSE_ARCH="x86_64" ;;
+    aarch64|arm64) COMPOSE_ARCH="aarch64" ;;
+    armv7l)        COMPOSE_ARCH="armv7" ;;
+    *)             COMPOSE_ARCH="" ;;
+  esac
+  [ -n "$COMPOSE_ARCH" ] || err "Docker Compose v2 is required and cannot be installed automatically on $(uname -m). Install the Docker Compose plugin and re-run."
+  step "Installing Docker Compose $COMPOSE_V2_VERSION"
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_V2_VERSION}/docker-compose-linux-${COMPOSE_ARCH}"     -o /usr/local/lib/docker/cli-plugins/docker-compose     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose     || err "Could not download Docker Compose v2. Install the Docker Compose plugin and re-run."
+  docker compose version >/dev/null 2>&1 || err "Docker Compose v2 was installed but 'docker compose' still does not work. Install the Docker Compose plugin and re-run."
 fi
-ok "Docker Compose found"
+COMPOSE="docker compose"
+ok "Docker Compose found ($(docker compose version --short 2>/dev/null || echo v2))"
 
 # ── Disk space check ───────────────────────────────────────────────────────────
 # Cheap to check up front, and directly prevents a disk-full incident at the
@@ -269,7 +316,8 @@ if [ -f /etc/docker/daemon.json ] && grep -q '"max-size"' /etc/docker/daemon.jso
   ok "Docker log rotation already configured"
 else
   if [ ! -f /etc/docker/daemon.json ] || [ ! -s /etc/docker/daemon.json ]; then
-    sudo sh -c "cat > /etc/docker/daemon.json" <<'EOF'
+    mkdir -p /etc/docker
+    sh -c "cat > /etc/docker/daemon.json" <<'EOF'
 {
   "log-driver": "json-file",
   "log-opts": {
@@ -278,9 +326,9 @@ else
   }
 }
 EOF
-    sudo systemctl restart docker 2>/dev/null && ok "Configured Docker log rotation (10m x 3 files per container)" \
+    systemctl restart docker 2>/dev/null && ok "Configured Docker log rotation (10m x 3 files per container)" \
       || warn "Wrote /etc/docker/daemon.json but could not restart docker — log rotation won't apply until the host restarts docker"
-  elif command -v python3 >/dev/null 2>&1 && sudo python3 - <<'PY'
+  elif command -v python3 >/dev/null 2>&1 && python3 - <<'PY'
 import json
 p = "/etc/docker/daemon.json"
 with open(p) as f:
@@ -293,7 +341,7 @@ with open(p, "w") as f:
     json.dump(cfg, f, indent=2)
 PY
   then
-    sudo systemctl restart docker 2>/dev/null && ok "Merged Docker log rotation into the existing /etc/docker/daemon.json" \
+    systemctl restart docker 2>/dev/null && ok "Merged Docker log rotation into the existing /etc/docker/daemon.json" \
       || warn "Merged log rotation into /etc/docker/daemon.json but could not restart docker — it applies after the next docker restart"
   else
     warn "/etc/docker/daemon.json has custom content that could not be merged automatically — every EdgeVISS container still caps its own logs (10m x 3) through docker-compose"
@@ -310,13 +358,13 @@ fi
 if [ -f /etc/systemd/journald.conf.d/edgeviss-log-limit.conf ]; then
   ok "systemd journal size cap already configured"
 elif command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd ]; then
-  sudo mkdir -p /etc/systemd/journald.conf.d
-  sudo sh -c "cat > /etc/systemd/journald.conf.d/edgeviss-log-limit.conf" <<'EOF'
+  mkdir -p /etc/systemd/journald.conf.d
+  sh -c "cat > /etc/systemd/journald.conf.d/edgeviss-log-limit.conf" <<'EOF'
 [Journal]
 SystemMaxUse=200M
 SystemMaxFileSize=20M
 EOF
-  sudo systemctl restart systemd-journald 2>/dev/null && ok "Configured systemd journal size cap (200MB total)" \
+  systemctl restart systemd-journald 2>/dev/null && ok "Configured systemd journal size cap (200MB total)" \
     || warn "Wrote journald.conf.d/edgeviss-log-limit.conf but could not restart systemd-journald — restart it manually or reboot"
 else
   warn "systemd not detected — skipping journal size cap (not applicable on this OS)"
@@ -338,7 +386,7 @@ if command -v timedatectl >/dev/null 2>&1; then
   if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
     ok "System clock is NTP-synchronized"
   else
-    sudo timedatectl set-ntp true 2>/dev/null
+    timedatectl set-ntp true 2>/dev/null
     sleep 2
     if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
       ok "Enabled NTP sync — system clock is now synchronized"
@@ -678,6 +726,22 @@ ENV
   fi
 else
   ok ".env already exists — keeping existing configuration"
+  # An .env from an older version lacks keys the current compose file needs;
+  # add only the missing ones (existing values are never changed).
+  ENV_ADDED=""
+  env_add() {
+    grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null && return 0
+    printf '%s=%s\n' "$1" "$2" >> "$INSTALL_DIR/.env"
+    ENV_ADDED="$ENV_ADDED $1"
+  }
+  env_add CONNECTOR_LOCAL_TOKEN "$(openssl rand -hex 24 2>/dev/null || tr -dc 'a-f0-9' </dev/urandom | head -c 48)"
+  if [ "$BUNDLE_PLATFORM" = "1" ]; then
+    env_add PLATFORM_REGISTRY_URL "http://platform-registry:59890"
+  fi
+  env_add GATEWAY_BIND_ADDRESS "0.0.0.0"
+  env_add FEATURE_REMOTE_ACCESS "true"
+  chmod 600 "$INSTALL_DIR/.env"
+  [ -n "$ENV_ADDED" ] && ok "Added settings this version needs to the existing .env:$ENV_ADDED"
 fi
 
 # ── Write docker-compose.yml ───────────────────────────────────────────────────
@@ -834,7 +898,22 @@ if [ "$BUNDLE_PLATFORM" = "1" ]; then
           && ok "Removed orphaned $PLATFORM_NETWORK from a previous install attempt" \
           || warn "Could not remove orphaned $PLATFORM_NETWORK — platform services may fail to start"
       else
-        warn "$PLATFORM_NETWORK exists with the wrong Compose label and has containers attached — not touching it automatically"
+        # Usually left by an older installer or the legacy docker-compose 1.x.
+        # When only EdgeVISS containers use it, remove them (their data lives
+        # in named volumes and survives) and the network, so compose recreates
+        # both correctly. Anything else attached is left alone.
+        NET_USERS=$(docker network inspect "$PLATFORM_NETWORK" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)
+        FOREIGN=""
+        for c in $NET_USERS; do
+          case "$c" in platform-*|edgeviss-*|*_edgeviss-gateway|device-bacnet-custom) ;; *) FOREIGN="$FOREIGN $c" ;; esac
+        done
+        if [ -z "$FOREIGN" ]; then
+          # shellcheck disable=SC2086
+          docker rm -f $NET_USERS >/dev/null 2>&1 || true
+          docker network rm "$PLATFORM_NETWORK" >/dev/null 2>&1             && ok "Recreating $PLATFORM_NETWORK (it had the wrong labels from an older install; data volumes kept)"             || warn "Could not remove $PLATFORM_NETWORK — platform services may fail to start"
+        else
+          warn "$PLATFORM_NETWORK has the wrong Compose label and non-EdgeVISS containers attached ($FOREIGN) — not touching it automatically"
+        fi
       fi
     fi
   fi
@@ -863,7 +942,18 @@ if [ "$BUNDLE_PLATFORM" = "1" ]; then
   # nothing); restart it so northbound publishing resumes.
   BROKER_ID_AFTER=$(docker inspect -f '{{.Id}}' platform-broker 2>/dev/null || echo "")
   if [ -n "$BROKER_ID_BEFORE" ] && [ "$BROKER_ID_BEFORE" != "$BROKER_ID_AFTER" ]; then
-    docker restart platform-rules >/dev/null 2>&1 && ok "Message broker was recreated — restarted the stream engine"
+    BROKER_STARTED=$(docker inspect -f '{{.State.StartedAt}}' platform-broker 2>/dev/null || echo "")
+    RECONNECTED=""
+    for c in $(docker network inspect edgeviss-platform-network --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null); do
+      [ "$c" = "platform-broker" ] && continue
+      c_started=$(docker inspect -f '{{.State.StartedAt}}' "$c" 2>/dev/null || echo "")
+      # started before the new broker => still holding the dead connection
+      if [ -n "$c_started" ] && [ "$c_started" != "$BROKER_STARTED" ] && \
+         [ "$(printf '%s\n%s\n' "$c_started" "$BROKER_STARTED" | sort | head -1)" = "$c_started" ]; then
+        docker restart "$c" >/dev/null 2>&1 && RECONNECTED="$RECONNECTED $c"
+      fi
+    done
+    [ -n "$RECONNECTED" ] && ok "Message broker was recreated — restarted services still on the old connection:$RECONNECTED"
   fi
   step "Waiting for platform services to register (up to 60s)"
   sleep 20
@@ -889,6 +979,11 @@ fi
 
 step "Starting gateway"
 cd "$INSTALL_DIR"
+# A crashed recreate (legacy docker-compose 1.x) leaves the old gateway
+# renamed to <id>_edgeviss-gateway, which blocks the new one.
+for c in $(docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_edgeviss-(gateway|connector)$'); do
+  docker rm -f "$c" >/dev/null 2>&1 && ok "Removed leftover container $c from an interrupted earlier install"
+done
 # Same platform override as the platform-compose.yml invocation above -
 # this compose call also resolves platform via host autodetection
 # independently of the earlier `docker pull --platform "$PLATFORM"`.
@@ -966,7 +1061,9 @@ KIOSKEOF
 fi
 
 # ── Done ───────────────────────────────────────────────────────────────────────
-GATEWAY_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+GATEWAY_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$GATEWAY_IP" ] || GATEWAY_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}')
+[ -n "$GATEWAY_IP" ] || GATEWAY_IP="localhost"
 
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
