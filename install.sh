@@ -386,7 +386,7 @@ if command -v timedatectl >/dev/null 2>&1; then
   if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
     ok "System clock is NTP-synchronized"
   else
-    timedatectl set-ntp true 2>/dev/null
+    timedatectl set-ntp true 2>/dev/null || true
     sleep 2
     if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
       ok "Enabled NTP sync — system clock is now synchronized"

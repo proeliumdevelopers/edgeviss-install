@@ -66,7 +66,11 @@ if [ "$TARGET" = "latest" ]; then
   warn "         Pin to a specific version for reproducible production deployments."
 fi
 
-CURRENT=$(grep "image:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1 | sed 's/.*://g' | tr -d ' ' || echo "unknown")
+# The running container is the truth: an update that stopped halfway has
+# already rewritten docker-compose.yml, and re-running it must not then say
+# "already on" while the old version keeps running.
+CURRENT=$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null | sed 's/.*://' | tr -d ' ')
+[ -n "$CURRENT" ] || CURRENT=$(grep "image:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1 | sed 's/.*://g' | tr -d ' ' || echo "unknown")
 
 echo ""
 echo "  EdgeViss Gateway Updater"
@@ -76,9 +80,21 @@ echo "  Gateway : ${DEPLOY_ENV}"
 [ "$DRY_RUN" = "1" ] && echo "  Mode    : DRY RUN — no changes will be applied"
 echo ""
 
-if [ "$CURRENT" = "$TARGET" ]; then
+if [ "$CURRENT" = "$TARGET" ] && [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]; then
   warn "Already on $TARGET — nothing to do"
   exit 0
+fi
+
+# ── Disk space: a release's images need room ───────────────────────────────────
+DOCKER_ROOT=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+FREE_MB=$(df -Pm "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ "$DRY_RUN" = "0" ] && [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1500 ]; then
+  warn "Only ${FREE_MB} MB free on the Docker disk — removing unused untagged images first"
+  docker image prune -f >/dev/null 2>&1 || true
+  FREE_MB=$(df -Pm "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+  if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1000 ]; then
+    die "Only ${FREE_MB} MB free on the Docker disk; at least 1000 MB is needed. Use System → Maintenance → Free disk space, then retry."
+  fi
 fi
 
 # ── Pre-flight: verify gateway is reachable ────────────────────────────────────
@@ -503,12 +519,12 @@ if [ -f "$PLATFORM_COMPOSE" ]; then
         && [ -s "$PLATFORM_COMPOSE.new" ]; then
       mv "$PLATFORM_COMPOSE.new" "$PLATFORM_COMPOSE"
       ok "platform-compose.yml updated from the $TARGET image"
-      # Start any new platform services added in this release (no restart of existing)
-      MIRROR_REGISTRY="${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}"
+      # Pull only. Both compose files form one project, so starting this file
+      # alone with --remove-orphans deleted the gateway and connector
+      # containers mid-update; the single reconcile of both files happens at
+      # the restart step (compose_up).
       docker compose -f "$PLATFORM_COMPOSE" pull --ignore-pull-failures 2>/dev/null || true
-      docker compose -f "$PLATFORM_COMPOSE" up -d --remove-orphans 2>/dev/null \
-        && ok "Platform services reconciled" \
-        || warn "Platform service reconcile had warnings — check: docker compose -f platform-compose.yml ps"
+      ok "Platform service images pulled"
     else
       rm -f "$PLATFORM_COMPOSE.new"
       warn "Could not extract platform-compose.yml from image — platform stack unchanged"
@@ -715,7 +731,7 @@ if [ "$DRY_RUN" = "0" ]; then
     if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
       ok "System clock is NTP-synchronized"
     else
-      sudo timedatectl set-ntp true 2>/dev/null
+      sudo timedatectl set-ntp true 2>/dev/null || true
       sleep 2
       if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
         ok "Enabled NTP sync — system clock is now synchronized"
