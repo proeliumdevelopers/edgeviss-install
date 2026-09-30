@@ -47,7 +47,9 @@ services:
       POSTGRES_DB: edgex_db
       POSTGRES_PASSWORD: postgres
     volumes:
-      - platform-db-data:/var/lib/postgresql/data
+      # postgres 18 keeps its data under /var/lib/postgresql/18/docker, so the
+      # volume goes on /var/lib/postgresql (update.sh moves older installs).
+      - platform-db-data:/var/lib/postgresql
     networks:
       - platform-network
 
@@ -307,9 +309,12 @@ services:
   platform-device-modbus:
     image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-modbus:4.0.2
     container_name: platform-device-modbus
+    # --overwrite: the configuration file below (configs:) is pushed to the
+    # config provider on every start, so a changed setting reaches gateways
+    # already installed instead of the provider's first-start copy winning.
     logging: *capped-logs
     hostname: platform-device-modbus
-    command: ["--registry", "-cp=keeper.http://platform-registry:59890"]
+    command: ["--registry", "-cp=keeper.http://platform-registry:59890", "--overwrite"]
     restart: unless-stopped
     privileged: ${MODBUS_PRIVILEGED:-true}
     depends_on:
@@ -325,8 +330,42 @@ services:
       # devices already registered in core-metadata via the EdgeViss UI.
       EDGEX__DEVICE__DEVICESDIR: ""
       EDGEX__DEVICE__PROFILESDIR: ""
+    # The service's own configuration file: the image's bundled one plus the
+    # device-down settings (see configs: below).
+    configs:
+      - source: device-modbus-config
+        target: /res/configuration.yaml
     networks:
       - platform-network
+
+configs:
+  # device-modbus's private configuration: the image's bundled file plus
+  # Device.AllowedFails / Device.DeviceDownTimeout, which neither that file
+  # nor EdgeX's common config contains (so an env override alone is ignored).
+  # A device that stops answering (unwired, powered off, faulty) must not
+  # stall a shared RS-485 bus: every poll to it waits the full response
+  # timeout, delaying every other device on the port. EdgeX marks a device
+  # DOWN after AllowedFails consecutive failed reads, refuses its polls while
+  # DOWN (no bus time), retries it every DeviceDownTimeout seconds and
+  # returns it to UP, and to normal polling, on the first good read.
+  # 6 = three missed cycles of a two-group device, so an intermittent device
+  # is not flapped DOWN. Both can be set per gateway in .env.
+  device-modbus-config:
+    content: |
+      Writable:
+        LogLevel: INFO
+      Service:
+        Host: localhost
+        Port: 59901
+        StartupMsg: device modbus started
+      MessageBus:
+        Optional:
+          ClientId: device-modbus
+      Device:
+        ProfilesDir: ""
+        DevicesDir: ""
+        AllowedFails: ${EDGEX_DEVICE_ALLOWED_FAILS:-6}
+        DeviceDownTimeout: ${EDGEX_DEVICE_DOWN_RETRY_SECONDS:-90}
 
 volumes:
   platform-db-data:

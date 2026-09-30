@@ -769,6 +769,40 @@ else
   ok "[dry-run] Would rescue any auto-backups from /app/backups into /data/backups before restart"
 fi
 
+# ── Step 4f: Platform database in its named volume ─────────────────────────────
+# postgres 18 keeps its data in /var/lib/postgresql/18/docker, not in
+# /var/lib/postgresql/data where earlier platform-compose files mounted the
+# named volume: every device, profile and reading lived in an anonymous
+# volume that a `docker compose down` or a new container would silently drop.
+# platform-compose now mounts the named volume at /var/lib/postgresql; before
+# the restart moves onto it, the existing data directory is renamed into the
+# named volume (same disk, so instant and needing no free space).
+step "Checking the platform database volume"
+if [ "$DRY_RUN" = "0" ] && [ -f "$PLATFORM_COMPOSE" ] \
+   && grep -qE 'platform-db-data:/var/lib/postgresql([^/]|$)' "$PLATFORM_COMPOSE" \
+   && docker inspect platform-database >/dev/null 2>&1; then
+  PG_ANON=$(docker inspect -f '{{range .Mounts}}{{if and (eq .Type "volume") (eq .Destination "/var/lib/postgresql")}}{{.Name}}{{end}}{{end}}' platform-database)
+  PG_NAMED=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' platform-database)
+  if [ -n "$PG_ANON" ] && [ -n "$PG_NAMED" ] && [ "$PG_ANON" != "$PG_NAMED" ]; then
+    ANON_DIR=$(docker volume inspect -f '{{.Mountpoint}}' "$PG_ANON")
+    NAMED_DIR=$(docker volume inspect -f '{{.Mountpoint}}' "$PG_NAMED")
+    if [ -e "$NAMED_DIR/18" ]; then
+      warn "The named database volume already holds a database — leaving both volumes as they are"
+    elif [ -f "$ANON_DIR/18/docker/PG_VERSION" ]; then
+      docker stop -t 60 platform-database >/dev/null \
+        || die "Could not stop the platform database to move it — gateway unchanged"
+      if mv "$ANON_DIR/18" "$NAMED_DIR/18"; then
+        ok "Platform database moved into the named volume $PG_NAMED"
+      else
+        docker start platform-database >/dev/null 2>&1 || true
+        die "Could not move the platform database into $PG_NAMED — gateway unchanged"
+      fi
+    fi
+  else
+    ok "Platform database already in its named volume"
+  fi
+fi
+
 # ── Step 5: Restart ────────────────────────────────────────────────────────────
 step "Restarting gateway"
 if [ "$DRY_RUN" = "0" ]; then
