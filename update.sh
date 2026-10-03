@@ -23,6 +23,12 @@ DRY_RUN=0
 [ "$2" = "--dry-run" ] && DRY_RUN=1
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+# install.sh persists GATEWAY_PORT in .env; the updater's own process env (an
+# nsenter shell with no compose env) never carries it, so read it the same way
+# GATEWAY_ENV is read below. An explicit process env value still wins.
+if [ -z "${GATEWAY_PORT:-}" ]; then
+  GATEWAY_PORT=$(sed -n 's/^GATEWAY_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | tr -d '\r' | tr -d "\"' ")
+fi
 PORT="${GATEWAY_PORT:-8080}"
 CONTAINER="edgeviss-gateway"
 # Production updates are deliberately stricter than lab updates. Read the
@@ -118,7 +124,14 @@ BACKUP_FILE="$BACKUP_DIR/pre-update-$(date +%Y%m%d-%H%M%S)-from-${CURRENT}.db"
 BACKUP_OK=0
 WAS_RUNNING=0
 
-if [ "$DRY_RUN" = "0" ]; then
+if [ "${EDGEVISS_UPDATE_REEXEC:-0}" = "1" ] && [ -n "${EDGEVISS_BACKUP_FILE:-}" ]; then
+  # Re-exec after the self-refresh in step 3b: the first run already took the
+  # quiesced backup. Do not stop the gateway and back up a second time; carry
+  # the first run's result forward so rollback still restores it.
+  BACKUP_FILE="$EDGEVISS_BACKUP_FILE"
+  BACKUP_OK="${EDGEVISS_BACKUP_OK:-0}"
+  ok "Pre-update database backup already taken by the first run (BACKUP_OK=$BACKUP_OK) — skipping"
+elif [ "$DRY_RUN" = "0" ]; then
   mkdir -p "$BACKUP_DIR"
   if docker inspect "$CONTAINER" >/dev/null 2>&1; then
     [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" = "true" ] && WAS_RUNNING=1
@@ -189,7 +202,7 @@ if [ "$DRY_RUN" = "0" ] && [ "${EDGEVISS_UPDATE_REEXEC:-0}" != "1" ]; then
       chmod +x "$TMP_SELF" 2>/dev/null || true
       mv "$TMP_SELF" "$SELF"
       ok "update.sh refreshed — re-running with newest logic"
-      EDGEVISS_UPDATE_REEXEC=1 exec "$SELF" "$@"
+      EDGEVISS_UPDATE_REEXEC=1 EDGEVISS_BACKUP_FILE="$BACKUP_FILE" EDGEVISS_BACKUP_OK="$BACKUP_OK" exec "$SELF" "$@"
     else
       rm -f "$TMP_SELF"
     fi
@@ -685,19 +698,12 @@ with open(path, 'w') as f:
     fi
 
     if [ "$NEEDS_DOCKER_RESTART" = "1" ]; then
-      if sudo systemctl restart docker 2>/dev/null; then
-        ok "Restarted dockerd to apply log rotation (existing container logs are NOT retroactively truncated by this alone)"
-        # Existing json-file logs already on disk keep growing under the
-        # OLD unbounded behavior until Docker itself rotates them on next
-        # write past the new cap -- for a host that's already near-full,
-        # truncate now so the fix has effect immediately rather than
-        # waiting for organic rotation.
-        sudo find /var/lib/docker/containers/ -name '*-json.log' -size +10M -exec truncate -s 0 {} \; 2>/dev/null \
-          && ok "Truncated existing oversized container logs (>10MB) to apply the new cap immediately" \
-          || true
-      else
-        warn "Could not restart dockerd — log rotation is configured in $DAEMON_JSON but won't take effect until the host is rebooted or docker is restarted manually"
-      fi
+      # Never restart dockerd here: this script runs inside the updater
+      # container, and restarting the daemon kills that container (exit 137)
+      # mid-update with no rollback. install.sh (run by an operator on the
+      # host) applies the restart; for an updated gateway the new cap simply
+      # takes effect the next time Docker or the host restarts.
+      warn "Docker log rotation was written to $DAEMON_JSON but dockerd was NOT restarted (it would kill this updater). It applies at the next Docker or host restart."
     fi
   fi
 
@@ -818,7 +824,12 @@ if [ "$DRY_RUN" = "0" ]; then
     compose_up || true
     die "Update aborted before restart; gateway kept on $CURRENT"
   fi
-  compose_up || die "docker compose up failed"
+  if ! compose_up; then
+    err "docker compose up failed — restoring the pre-update compose file and restarting the current version"
+    cp "$INSTALL_DIR/docker-compose.yml.pre-update" "$INSTALL_DIR/docker-compose.yml"
+    compose_up || true
+    die "Update aborted: docker compose up failed; gateway kept on $CURRENT"
+  fi
   ok "Container started"
   # The stream engine's shared platform source does not reconnect when the
   # internal message broker container is recreated under it: every export
@@ -893,6 +904,10 @@ else
     cd "$INSTALL_DIR"
     compose_up 2>/dev/null || true
     err "Rolled back to $CURRENT"
+    # Exit code 3 = health check failed and the previous version was restored.
+    # The gateway reads the updater container's exit status to report
+    # "rolled_back" to Manager (any other non-zero exit is a plain failure).
+    ROLLED_BACK=1
     [ "$BACKUP_OK" = "1" ] && err "Pre-update backup: $BACKUP_FILE"
     [ "$BACKUP_OK" = "1" ] && [ "$DB_RESTORED" != "1" ] && err "Database restore requires manual verification before returning this gateway to service"
     err "Investigate with: docker logs $CONTAINER"
@@ -901,6 +916,7 @@ else
     err "Edit docker-compose.yml back to the previous immutable tag and restore $BACKUP_FILE if the failed release changed the database."
   fi
 
+  [ "${ROLLED_BACK:-0}" = "1" ] && exit 3
   exit 1
 fi
 
