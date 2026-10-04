@@ -859,13 +859,42 @@ else
 fi
 
 # ── Step 6: Health check with auto-rollback ────────────────────────────────────
-step "Waiting for gateway to be healthy (up to 60s)"
+# Two failure modes, handled differently:
+#   * Crash-loop (the new container keeps exiting): definite failure — fail
+#     fast once it has been seen dead 3 checks in a row instead of waiting out
+#     the whole window against a container that will never answer.
+#   * Running but not healthy yet (slow host, first-boot migrations): be
+#     patient — up to 120s, double the old 60s window that rolled back healthy
+#     but slow gateways.
+# Either way the failed container's own logs are captured BEFORE the rollback
+# replaces it: after a rollback `docker logs edgeviss-gateway` only shows the
+# OLD version, so without this the reason for the failure is unrecoverable.
+step "Waiting for gateway to be healthy (up to 120s)"
 TRIES=0
 HEALTHY=0
-while [ "$TRIES" -lt 30 ]; do
-  if curl -fsS --max-time 3 "http://localhost:${PORT}/api/health" >/dev/null 2>&1; then
+LAST_CODE="no-response"
+DEAD_STREAK=0
+SAW_RUNNING=0
+LAST_EXIT=""
+while [ "$TRIES" -lt 60 ]; do
+  HTTP_CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${PORT}/api/health" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
     HEALTHY=1
     break
+  fi
+  LAST_CODE="$HTTP_CODE"
+  # Container state: running | restarting | exited:<code> | missing
+  CSTATE=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+  if [ "$CSTATE" = "running" ] || [ "$CSTATE" = "restarting" ]; then
+    SAW_RUNNING=1
+    DEAD_STREAK=0
+  else
+    LAST_EXIT=$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || echo "?")
+    DEAD_STREAK=$((DEAD_STREAK+1))
+    if [ "$DEAD_STREAK" -ge 3 ]; then
+      err "New container is ${CSTATE} (exit ${LAST_EXIT}) — it will never become healthy; failing fast"
+      break
+    fi
   fi
   TRIES=$((TRIES+1))
   sleep 2
@@ -874,8 +903,33 @@ done
 if [ "$HEALTHY" = "1" ]; then
   ok "Health check passed after $((TRIES * 2))s"
 else
-  err "Health check failed after 60s — rolling back to ${CURRENT}"
+  if [ "$SAW_RUNNING" = "1" ]; then
+    err "Health check failed after up to 120s (last HTTP ${LAST_CODE}) — rolling back to ${CURRENT}"
+  else
+    err "New container never stayed running (state ${CSTATE:-missing}, exit ${LAST_EXIT:-?}) — rolling back to ${CURRENT}"
+  fi
   echo ""
+
+  # Capture WHY before the rollback destroys the evidence. The updater's own
+  # stdout reaches System → Update and Manager through the connector's status
+  # logs; the file survives on the host for later inspection.
+  UPDATE_LOG_DIR="$INSTALL_DIR/logs"
+  UPDATE_LOG_FILE="$UPDATE_LOG_DIR/update-$(echo "$TARGET" | tr -c 'A-Za-z0-9._-' '_')-$(date +%Y%m%d-%H%M%S).log"
+  mkdir -p "$UPDATE_LOG_DIR" 2>/dev/null || true
+  {
+    echo "EdgeViss update failure: ${CURRENT} -> ${TARGET} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+    echo "Container state at failure: ${CSTATE:-missing} (exit ${LAST_EXIT:-?}); last /api/health HTTP: ${LAST_CODE}"
+    echo "--- docker inspect (State) ---"
+    docker inspect -f '{{json .State}}' "$CONTAINER" 2>&1 || echo "(inspect unavailable)"
+    echo "--- ${CONTAINER} logs, newest 150 lines (the FAILED version) ---"
+    docker logs --tail 150 "$CONTAINER" 2>&1 || echo "(logs unavailable)"
+  } > "$UPDATE_LOG_FILE" 2>/dev/null || true
+  if [ -s "$UPDATE_LOG_FILE" ]; then
+    err "Failure diagnostics saved to $UPDATE_LOG_FILE"
+    echo "--- failed version logs (newest 40 lines) ---"
+    docker logs --tail 40 "$CONTAINER" 2>/dev/null || tail -40 "$UPDATE_LOG_FILE" 2>/dev/null || true
+    echo "--- end of failed version logs ---"
+  fi
 
   # Auto-rollback: restore the pre-update DB (if captured), restore the
   # previous immutable image tag, then bring the exact same compose pair back.
@@ -910,7 +964,7 @@ else
     ROLLED_BACK=1
     [ "$BACKUP_OK" = "1" ] && err "Pre-update backup: $BACKUP_FILE"
     [ "$BACKUP_OK" = "1" ] && [ "$DB_RESTORED" != "1" ] && err "Database restore requires manual verification before returning this gateway to service"
-    err "Investigate with: docker logs $CONTAINER"
+    err "Failure diagnostics (failed-version logs included): ${UPDATE_LOG_FILE:-$INSTALL_DIR/logs/}"
   else
     err "No rollback image available — manual intervention required"
     err "Edit docker-compose.yml back to the previous immutable tag and restore $BACKUP_FILE if the failed release changed the database."
