@@ -72,10 +72,28 @@ if [ "$TARGET" = "latest" ]; then
   warn "         Pin to a specific version for reproducible production deployments."
 fi
 
+# ── Docker reachability in THESE namespaces ──────────────────────────────────
+# This script is normally exec'd inside the host's own namespaces (nsenter to
+# PID 1, so the host's docker CLI, paths and network apply). On hosts where
+# PID 1 is not a normal init -- WSL2 (/init), Docker Desktop VMs -- the
+# namespaces entered here have no docker socket: every later docker call
+# then fails one by one ("Pull failed", backup skipped as "lab mode") and
+# the real cause is invisible. Probe once, up front, and fail fast with the
+# exact remedy instead. Exit 67 = docker unreachable in host namespaces
+# (the Local UI and Manager both explain it; nothing was changed).
+if ! docker info >/dev/null 2>&1; then
+  err "Docker is not reachable from the host namespaces this updater runs in."
+  err "Typical on WSL2 / Docker Desktop hosts, where PID 1 is not the system init that owns the Docker socket."
+  err "Nothing was changed. Run this same updater from the host shell instead:"
+  err "  sudo bash $INSTALL_DIR/update.sh $TARGET"
+  exit 67
+fi
+
 # The running container is the truth: an update that stopped halfway has
 # already rewritten docker-compose.yml, and re-running it must not then say
 # "already on" while the old version keeps running.
-CURRENT=$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null | sed 's/.*://' | tr -d ' ')
+CUR_REF=$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null | tr -d ' ')
+CURRENT=$(printf '%s' "$CUR_REF" | sed 's/.*://' | tr -d ' ')
 [ -n "$CURRENT" ] || CURRENT=$(grep "image:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1 | sed 's/.*://g' | tr -d ' ' || echo "unknown")
 
 echo ""
@@ -167,15 +185,23 @@ fi
 # ── Step 2: Tag current image as rollback target ───────────────────────────────
 step "Saving rollback target"
 if [ "$DRY_RUN" = "0" ]; then
-  if docker image inspect "${REGISTRY}/${IMAGE}:${CURRENT}" >/dev/null 2>&1; then
+  if [ -n "$CUR_REF" ] && docker image inspect "$CUR_REF" >/dev/null 2>&1; then
+    # Tag the ACTUAL running image (whatever repository it came from --
+    # registry releases and locally-built demo images alike), not just the
+    # registry path: on a locally-built gateway the registry ref does not
+    # exist and the old code silently created no rollback target at all.
+    docker tag "$CUR_REF" "${REGISTRY}/${IMAGE}:rollback" 2>/dev/null \
+      && ok "Tagged ${CUR_REF} as :rollback" \
+      || warn "Could not tag rollback image"
+  elif docker image inspect "${REGISTRY}/${IMAGE}:${CURRENT}" >/dev/null 2>&1; then
     docker tag "${REGISTRY}/${IMAGE}:${CURRENT}" "${REGISTRY}/${IMAGE}:rollback" 2>/dev/null \
       && ok "Tagged ${CURRENT} as :rollback" \
       || warn "Could not tag rollback image (image may have been pruned)"
   else
-    warn "Current image ${CURRENT} not found locally — no rollback tag created"
+    warn "Current image ${CUR_REF:-$CURRENT} not found locally — no rollback tag created"
   fi
 else
-  ok "[dry-run] Would tag ${CURRENT} as :rollback"
+  ok "[dry-run] Would tag ${CUR_REF:-$CURRENT} as :rollback"
 fi
 
 # ── Step 3: Pull new image ─────────────────────────────────────────────────────
@@ -217,10 +243,32 @@ if [ "$DRY_RUN" = "0" ]; then
   # Every compose edit below is checked before the restart; this copy is
   # what the gateway comes back up on if the edited file does not validate.
   cp "$INSTALL_DIR/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml.pre-update"
-  sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${TARGET}|g" \
-    "$INSTALL_DIR/docker-compose.yml" \
-    || die "Failed to update docker-compose.yml"
-  ok "Version updated to $TARGET"
+  # Rewrite the gateway service's own image line, identified by its
+  # container_name -- whatever repository it currently points at. Demo/lab
+  # gateways run locally-built images (e.g. edgeviss-gateway:0.2.97-local.1),
+  # not the registry path: a repo-pattern sed silently matches nothing there
+  # and the "update" then restarts the SAME image while reporting success.
+  # Two passes over the file (first finds the owning service block, then
+  # rewrites its image line) because image: may sit above container_name.
+  NEW_REF="${REGISTRY}/${IMAGE}:${TARGET}"
+  CF="$INSTALL_DIR/docker-compose.yml"
+  if awk -v container="$CONTAINER" -v ref="$NEW_REF" '
+    FNR == NR {
+      if ($0 ~ /^  [A-Za-z0-9_.-]+:[[:space:]]*$/) svc = $1
+      if ($0 ~ ("^[[:space:]]*container_name:[[:space:]]*" container "[[:space:]]*$")) target = svc
+      next
+    }
+    $0 ~ /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { cur = $1 }
+    cur == target && /^[[:space:]]*image:[[:space:]]*/ { sub(/image:[[:space:]]*.*/, "image: " ref); changed = 1 }
+    { print }
+    END { exit !(target != "" && changed) }
+  ' "$CF" "$CF" > "$CF.tmp"; then
+    mv "$CF.tmp" "$CF"
+    ok "Gateway image set to $NEW_REF"
+  else
+    rm -f "$CF.tmp"
+    die "docker-compose.yml has no gateway image line to update (no service with container_name ${CONTAINER}). Edit the gateway service's image by hand to ${NEW_REF}, then re-run."
+  fi
 else
   ok "[dry-run] Would update docker-compose.yml to $TARGET"
 fi
