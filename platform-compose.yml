@@ -338,6 +338,40 @@ services:
     networks:
       - platform-network
 
+  # OPC UA protocol driver -- the official EdgeX device service
+  # (edgexfoundry/device-opc-ua:4.0.2, default service port 59997), mirrored
+  # to GHCR like every other platform-device-* image. Mirror it before first
+  # use: docker pull edgexfoundry/device-opc-ua:4.0.2 && docker tag ... &&
+  # docker push ${MIRROR_REGISTRY}/platform-device-opcua:4.0.2. No custom
+  # config file: OPC UA security/certificate policy belongs to the device
+  # service's own runtime configuration, never to commissioning input.
+  platform-device-opcua:
+    image: ${MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}/platform-device-opcua:4.0.2
+    container_name: platform-device-opcua
+    logging: *capped-logs
+    hostname: platform-device-opcua
+    # NOTE: device-opc-ua's flag parser only honors the long "--flag=value"
+    # form -- the "-cp=url" short form other EdgeX services accept is
+    # silently dropped here and the service falls back to localhost:59890,
+    # waiting forever. Verified live against 4.0.2.
+    command: ["--registry", "--configProvider=keeper.http://platform-registry:59890", "--overwrite"]
+    restart: unless-stopped
+    depends_on:
+      - platform-registry
+      - platform-metadata
+      - platform-data
+      - platform-config-bootstrapper
+    environment:
+      EDGEX_SECURITY_SECRET_STORE: "false"
+      SERVICE_HOST: platform-device-opcua
+      # Empty string prevents the service from loading its bundled sample
+      # SimulationServer device/profile on startup, which would conflict
+      # with devices commissioned through the EdgeVISS UI.
+      EDGEX__DEVICE__DEVICESDIR: ""
+      EDGEX__DEVICE__PROFILESDIR: ""
+    networks:
+      - platform-network
+
 configs:
   # device-modbus's private configuration: the image's bundled file plus
   # Device.AllowedFails / Device.DeviceDownTimeout, which neither that file
