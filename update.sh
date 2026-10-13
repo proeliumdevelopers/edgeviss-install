@@ -109,12 +109,29 @@ if [ "$CURRENT" = "$TARGET" ] && [ "$(docker inspect -f '{{.State.Running}}' "$C
   exit 0
 fi
 
+# Old version tags are not "dangling", so `docker image prune` never removed them: every update left the previous gateway and connector
+# images behind and a small disk (a Pi) eventually could not take the next one. Keep what runs, the rollback image and the target.
+prune_old_versions() {
+  for repo in "${REGISTRY}/${IMAGE}" "${REGISTRY}/${IMAGE}-connector"; do
+    docker images --format '{{.Repository}}:{{.Tag}}' "$repo" 2>/dev/null | while read -r ref; do
+      case "$ref" in
+        *:rollback|*:"$TARGET"|*:"$CURRENT"|*:"<none>") continue ;;
+      esac
+      # never remove an image a container is using
+      if [ -z "$(docker ps -a --filter "ancestor=$ref" -q 2>/dev/null)" ]; then
+        docker rmi "$ref" >/dev/null 2>&1 || true
+      fi
+    done
+  done
+}
+
 # ── Disk space: a release's images need room ───────────────────────────────────
 DOCKER_ROOT=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 FREE_MB=$(df -Pm "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
 if [ "$DRY_RUN" = "0" ] && [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1500 ]; then
   warn "Only ${FREE_MB} MB free on the Docker disk — removing unused untagged images first"
   docker image prune -f >/dev/null 2>&1 || true
+  prune_old_versions
   FREE_MB=$(df -Pm "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
   if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1000 ]; then
     die "Only ${FREE_MB} MB free on the Docker disk; at least 1000 MB is needed. Use System → Maintenance → Free disk space, then retry."
@@ -185,7 +202,11 @@ fi
 # ── Step 2: Tag current image as rollback target ───────────────────────────────
 step "Saving rollback target"
 if [ "$DRY_RUN" = "0" ]; then
-  if [ -n "$CUR_REF" ] && docker image inspect "$CUR_REF" >/dev/null 2>&1; then
+  if [ "$CURRENT" = "$TARGET" ] && docker image inspect "${REGISTRY}/${IMAGE}:rollback" >/dev/null 2>&1; then
+    # A rerun after an interrupted update: what runs now IS the target (possibly the broken one), so tagging it as the rollback
+    # image would destroy the real rollback target saved by the first run.
+    ok "Keeping the rollback image saved by the earlier run"
+  elif [ -n "$CUR_REF" ] && docker image inspect "$CUR_REF" >/dev/null 2>&1; then
     # Tag the ACTUAL running image (whatever repository it came from --
     # registry releases and locally-built demo images alike), not just the
     # registry path: on a locally-built gateway the registry ref does not
@@ -1001,10 +1022,25 @@ else
       fi
     fi
 
-    sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${REGISTRY}/${IMAGE}:${CURRENT}|g" \
+    # The previous version's own tag when it still exists here; otherwise the saved :rollback image (a locally built or mirrored
+    # gateway has no registry tag for CURRENT, and compose would fail to find it).
+    ROLLBACK_REF="${REGISTRY}/${IMAGE}:${CURRENT}"
+    docker image inspect "$ROLLBACK_REF" >/dev/null 2>&1 || ROLLBACK_REF="${REGISTRY}/${IMAGE}:rollback"
+    sed -i "s|image: ${REGISTRY}/${IMAGE}:.*|image: ${ROLLBACK_REF}|g" \
       "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
     cd "$INSTALL_DIR"
     compose_up 2>/dev/null || true
+    # "Rolled back" is only true if the old version is actually answering: say so, and exit differently, if it is not.
+    ROLLBACK_HEALTHY=0
+    for _ in $(seq 1 30); do
+      if curl -fsS --max-time 3 "http://localhost:${PORT}/api/health" >/dev/null 2>&1; then ROLLBACK_HEALTHY=1; break; fi
+      sleep 2
+    done
+    if [ "$ROLLBACK_HEALTHY" != "1" ]; then
+      err "The previous version ($CURRENT) was restored but is NOT answering — this gateway is down and needs attention"
+      err "Check: docker logs $CONTAINER   (diagnostics: ${UPDATE_LOG_FILE:-$INSTALL_DIR/logs/})"
+      exit 4
+    fi
     err "Rolled back to $CURRENT"
     # Exit code 3 = health check failed and the previous version was restored.
     # The gateway reads the updater container's exit status to report
@@ -1026,6 +1062,7 @@ fi
 echo ""
 echo "  Update complete."
 echo ""
+prune_old_versions
 echo "  Version : $TARGET"
 if [ "$BACKUP_OK" = "1" ]; then
   echo "  Backup  : $BACKUP_FILE"
