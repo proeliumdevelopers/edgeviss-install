@@ -572,6 +572,13 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
     || echo "")
 
+  # Shared secret between gateway-ui-api and the PLC access agent (the
+  # "plcaccess" service): the agent reads its WireGuard grant and reports its
+  # status through gateway-ui-api with it, and never holds the device token.
+  PLCACCESS_LOCAL_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+    || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
+    || echo "")
+
   # Machine-to-machine token for /api/alarms/ingest, /api/alarms/evaluate,
   # and /api/sparkplug/ingest (Foundation Hardening Batch 5C). Auto-
   # generated on every FRESH install so a gateway that later switches
@@ -682,6 +689,7 @@ MODBUS_PRIVILEGED=$GENERATED_MODBUS_PRIVILEGED
 EDGEVISS_HOST_INSTALL_DIR=$INSTALL_DIR
 CONNECTOR_TOKEN=$CONNECTOR_TOKEN
 CONNECTOR_LOCAL_TOKEN=$CONNECTOR_LOCAL_TOKEN
+PLCACCESS_LOCAL_TOKEN=$PLCACCESS_LOCAL_TOKEN
 
 # Self URL the stream engine (eKuiper) uses to POST alarm evaluations back to
 # this gateway -- must match the docker-compose service's container_name
@@ -735,6 +743,7 @@ else
     ENV_ADDED="$ENV_ADDED $1"
   }
   env_add CONNECTOR_LOCAL_TOKEN "$(openssl rand -hex 24 2>/dev/null || tr -dc 'a-f0-9' </dev/urandom | head -c 48)"
+  env_add PLCACCESS_LOCAL_TOKEN "$(openssl rand -hex 24 2>/dev/null || tr -dc 'a-f0-9' </dev/urandom | head -c 48)"
   if [ "$BUNDLE_PLATFORM" = "1" ]; then
     env_add PLATFORM_REGISTRY_URL "http://platform-registry:59890"
   fi
@@ -874,8 +883,32 @@ services:
       - /usr/lib/systemd/system:/host-systemd-lib:ro
     $NETWORK_BLOCK
 
+  # PLC Engineering Access agent (docs/EDGEVISS_PLC_ENGINEERING_ACCESS_2026-10-15.md).
+  # Idle until an admin enables PLC access for this gateway in Manager and an
+  # engineer's session is approved; then it creates the WireGuard interface
+  # evplc0 and its own nftables table, and removes both when the session ends.
+  # Host network and NET_ADMIN only (not privileged). The cgroup rule lets it
+  # create /dev/net/tun for wireguard-go on kernels without the WireGuard module.
+  plcaccess:
+    image: ${REGISTRY}/${IMAGE}-plcaccess:${VERSION}
+    container_name: edgeviss-plcaccess
+    restart: unless-stopped
+    logging: *capped-logs
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    environment:
+      PLCACCESS_LOCAL_TOKEN: \${PLCACCESS_LOCAL_TOKEN:-}
+      GATEWAY_BIND_ADDRESS: \${GATEWAY_BIND_ADDRESS:-0.0.0.0}
+      GATEWAY_PORT: \${GATEWAY_PORT:-$PORT}
+    volumes:
+      - plcaccess-data:/var/lib/edgeviss-plcaccess
+
 volumes:
   gateway-data:
+  plcaccess-data:
 $NETWORK_REF
 COMPOSE
 ok "docker-compose.yml written"
@@ -996,6 +1029,12 @@ if DOCKER_DEFAULT_PLATFORM="$PLATFORM" $COMPOSE $COMPOSE_FILES up -d connector; 
   ok "Connector started"
 else
   warn "Connector image could not be pulled (${REGISTRY}/edgeviss-connector:${VERSION}) — data collection is unaffected, but in-UI updates and scheduled reboots stay unavailable until: cd $INSTALL_DIR && docker compose $COMPOSE_FILES up -d connector"
+fi
+# PLC access agent: idle until PLC access is enabled in Manager; never blocks the gateway.
+if DOCKER_DEFAULT_PLATFORM="$PLATFORM" $COMPOSE $COMPOSE_FILES up -d plcaccess; then
+  ok "PLC access agent started (idle until PLC access is enabled in Manager)"
+else
+  warn "PLC access agent image could not be pulled (${REGISTRY}/${IMAGE}-plcaccess:${VERSION}) — everything else is unaffected; PLC access stays unavailable until: cd $INSTALL_DIR && docker compose $COMPOSE_FILES up -d plcaccess"
 fi
 
 # ── Wait for health ────────────────────────────────────────────────────────────

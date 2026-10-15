@@ -569,16 +569,80 @@ else
   ok "[dry-run] Would ensure the connector service and host facts mounts"
 fi
 
-# compose_up starts every service; a connector whose image is not available
-# locally is left out so it cannot fail the gateway update.
+# PLC Engineering Access agent (docs/EDGEVISS_PLC_ENGINEERING_ACCESS_2026-10-15.md): idle until PLC access is
+# enabled for this gateway in Manager. Added only when its image exists for the target version.
+step "Ensuring the PLC access agent"
+PLCACCESS_IMAGE="${REGISTRY}/${IMAGE}-plcaccess"
+if [ "$DRY_RUN" = "0" ]; then
+  COMPOSE_YML="$INSTALL_DIR/docker-compose.yml"
+  if ! grep -q '^PLCACCESS_LOCAL_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    RETRO_PLCACCESS_TOKEN=$(openssl rand -hex 24 2>/dev/null \
+      || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null || echo "")
+    printf 'PLCACCESS_LOCAL_TOKEN=%s\n' "$RETRO_PLCACCESS_TOKEN" >> "$INSTALL_DIR/.env"
+    ok "Added PLCACCESS_LOCAL_TOKEN to .env"
+  fi
+  if docker pull "${PLCACCESS_IMAGE}:${TARGET}" >/dev/null 2>&1 || docker image inspect "${PLCACCESS_IMAGE}:${TARGET}" >/dev/null 2>&1; then
+    if grep -q '^  plcaccess:' "$COMPOSE_YML" 2>/dev/null; then
+      sed -i "s|image: ${PLCACCESS_IMAGE}:.*|image: ${PLCACCESS_IMAGE}:${TARGET}|" "$COMPOSE_YML"
+      ok "PLC access agent set to $TARGET"
+    else
+      # The port default the gateway service itself was written with (GATEWAY_PORT in .env still overrides it).
+      GW_PORT_DEFAULT=$(sed -n 's/.*GATEWAY_UI_PORT: \${GATEWAY_PORT:-\([0-9][0-9]*\)}.*/\1/p' "$COMPOSE_YML" | head -1)
+      PLCACCESS_BLOCK="  plcaccess:
+    image: ${PLCACCESS_IMAGE}:${TARGET}
+    container_name: edgeviss-plcaccess
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: \"10m\"
+        max-file: \"3\"
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    device_cgroup_rules:
+      - \"c 10:200 rwm\"
+    environment:
+      PLCACCESS_LOCAL_TOKEN: \${PLCACCESS_LOCAL_TOKEN:-}
+      GATEWAY_BIND_ADDRESS: \${GATEWAY_BIND_ADDRESS:-0.0.0.0}
+      GATEWAY_PORT: \${GATEWAY_PORT:-${GW_PORT_DEFAULT:-8080}}
+    volumes:
+      - plcaccess-data:/var/lib/edgeviss-plcaccess
+"
+      # Service before the top-level volumes: key, its volume right after it.
+      if PB="$PLCACCESS_BLOCK" awk '/^volumes:/ && !done { printf "%s\n", ENVIRON["PB"]; print; print "  plcaccess-data:"; done=1; next } { print }' "$COMPOSE_YML" > "$COMPOSE_YML.tmp" \
+        && grep -q '^  plcaccess:' "$COMPOSE_YML.tmp" && grep -q '^  plcaccess-data:' "$COMPOSE_YML.tmp"; then
+        mv "$COMPOSE_YML.tmp" "$COMPOSE_YML"
+        ok "Added the PLC access agent to docker-compose.yml (idle until PLC access is enabled in Manager)"
+      else
+        rm -f "$COMPOSE_YML.tmp"
+        warn "Could not add the PLC access agent — everything else is unaffected; PLC access stays unavailable on this gateway"
+      fi
+    fi
+  else
+    warn "PLC access agent image ${PLCACCESS_IMAGE}:${TARGET} is not pullable — PLC access stays unavailable; everything else is unaffected"
+  fi
+else
+  ok "[dry-run] Would ensure the PLC access agent"
+fi
+
+# compose_up starts every service; an optional service (connector, PLC access
+# agent) whose image is not available is left out so it cannot fail the update.
 compose_up() {
   set -- up -d --remove-orphans
   [ -f "$INSTALL_DIR/platform-compose.yml" ] && CF="-f platform-compose.yml -f docker-compose.yml" || CF=""
-  CONN_REF=$(sed -n "s|^\s*image: \(${CONNECTOR_IMAGE}:.*\)$|\1|p" "$INSTALL_DIR/docker-compose.yml" | head -1)
-  if [ -n "$CONN_REF" ] && ! docker image inspect "$CONN_REF" >/dev/null 2>&1 && ! docker pull "$CONN_REF" >/dev/null 2>&1; then
-    warn "Connector image $CONN_REF unavailable — starting everything else"
+  SKIP=""
+  for OPT in "connector:${CONNECTOR_IMAGE}" "plcaccess:${PLCACCESS_IMAGE}"; do
+    OPT_SVC=${OPT%%:*}; OPT_IMG=${OPT#*:}
+    OPT_REF=$(sed -n "s|^\s*image: \(${OPT_IMG}:.*\)$|\1|p" "$INSTALL_DIR/docker-compose.yml" | head -1)
+    if [ -n "$OPT_REF" ] && ! docker image inspect "$OPT_REF" >/dev/null 2>&1 && ! docker pull "$OPT_REF" >/dev/null 2>&1; then
+      warn "Image $OPT_REF unavailable — starting everything except $OPT_SVC"
+      SKIP="$SKIP $OPT_SVC"
+    fi
+  done
+  if [ -n "$SKIP" ]; then
     # shellcheck disable=SC2086
-    docker compose $CF "$@" $(docker compose $CF config --services | grep -vx connector)
+    docker compose $CF "$@" $(docker compose $CF config --services | grep -vxF -e dummy-never $(for s in $SKIP; do printf -- '-e %s ' "$s"; done))
   else
     # shellcheck disable=SC2086
     docker compose $CF "$@"
