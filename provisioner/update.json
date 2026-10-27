@@ -1,0 +1,11 @@
+{
+  "version": "0.3.11",
+  "notes": "Install EdgeVISS Local on this computer from the app (newest release chosen automatically). Automatic update checking.",
+  "pub_date": "2026-10-27T15:01:08.230Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFpIeXNKS3BzYXdjSnB2b0h4SVVEVWY1OXJMSTQzbjQvSFgzSVpQNVBDbDRtY2RkbnI4djdNVFhzbVNYTCtTKy8xMkVYQ2h4MU95c014MkhUUVErekEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTEzMjA2CWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjExX3g2NC1zZXR1cC5leGUKUCtHdE9SR3h1L0FYbXRwbkdTeVZDWkNZZldrNlM1YXA0bXpQd0x6a0Foa0hJOUlPUk5ZT1I0T1RFYjBQN0NCU3RIM3dldDBIRzh6S2huTGE5bDhjQkE9PQo=",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.11/edgeviss-provisioner-setup.exe"
+    }
+  }
+}
