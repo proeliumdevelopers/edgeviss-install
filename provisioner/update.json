@@ -1,11 +1,11 @@
 {
-  "version": "0.3.12",
-  "notes": "Fixes Docker not reachable on Windows with Docker inside WSL: the app starts Docker, keeps WSL awake and makes the install survive restarts.",
-  "pub_date": "2026-10-27T15:29:46.731Z",
+  "version": "0.3.13",
+  "notes": "Status check can no longer hang; hidden banners stay hidden.",
+  "pub_date": "2026-10-27T15:52:04.810Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSGFsOUxUcWZ2bVBtalpyVHIzSW9kb1grenMxRkVkeTZoWFNPLzMrR09mTFZBL2ZYdkgzWUdmY2R4eHdoUGhqL1R2eU1YL0NvV0x4NFFURzlQeThLUUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTE0OTY0CWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjEyX3g2NC1zZXR1cC5leGUKYmJ5L0h1NHNlVU1pdm0wTTJjcEZwOFJGd0Q3MDBkN29tQ05DOTZ1Y01WYy9FTndpNmg3ZE5zRm1JVFViUEtiZXk5WHpKSHVOYzU2Yi9QZUdMSWNsRGc9PQo=",
-      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.12/edgeviss-provisioner-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFk5dnQ3UFV1cDdaWTd2b0daVGxqMU1OeEZFd0FhUVJGT0ZnYXc3dTJZelQxWGdzSDZyMDE3L0p1Vkpla0I2ckQ5YVdwRGxTeTRrM1dJalFoYlFIU1F3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTE2MjYxCWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjEzX3g2NC1zZXR1cC5leGUKK3BabHlsUzd1a3BpeGVGaFNBNG5JcTh2UnZUMEZLb1JUazdLa1Fwbzl2ZXlJcVhFZ3FqYlF0MTd3Y0x6b0ZkNnlmQ1RvMzhhODFRem5uQ283enMvQkE9PQo=",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.13/edgeviss-provisioner-setup.exe"
     }
   }
 }
