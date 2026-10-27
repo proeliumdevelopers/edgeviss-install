@@ -1,11 +1,11 @@
 {
-  "version": "0.3.11",
-  "notes": "Install EdgeVISS Local on this computer from the app (newest release chosen automatically). Automatic update checking.",
-  "pub_date": "2026-10-27T15:01:08.230Z",
+  "version": "0.3.12",
+  "notes": "Fixes Docker not reachable on Windows with Docker inside WSL: the app starts Docker, keeps WSL awake and makes the install survive restarts.",
+  "pub_date": "2026-10-27T15:29:46.731Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFpIeXNKS3BzYXdjSnB2b0h4SVVEVWY1OXJMSTQzbjQvSFgzSVpQNVBDbDRtY2RkbnI4djdNVFhzbVNYTCtTKy8xMkVYQ2h4MU95c014MkhUUVErekEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTEzMjA2CWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjExX3g2NC1zZXR1cC5leGUKUCtHdE9SR3h1L0FYbXRwbkdTeVZDWkNZZldrNlM1YXA0bXpQd0x6a0Foa0hJOUlPUk5ZT1I0T1RFYjBQN0NCU3RIM3dldDBIRzh6S2huTGE5bDhjQkE9PQo=",
-      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.11/edgeviss-provisioner-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSGFsOUxUcWZ2bVBtalpyVHIzSW9kb1grenMxRkVkeTZoWFNPLzMrR09mTFZBL2ZYdkgzWUdmY2R4eHdoUGhqL1R2eU1YL0NvV0x4NFFURzlQeThLUUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTE0OTY0CWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjEyX3g2NC1zZXR1cC5leGUKYmJ5L0h1NHNlVU1pdm0wTTJjcEZwOFJGd0Q3MDBkN29tQ05DOTZ1Y01WYy9FTndpNmg3ZE5zRm1JVFViUEtiZXk5WHpKSHVOYzU2Yi9QZUdMSWNsRGc9PQo=",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.12/edgeviss-provisioner-setup.exe"
     }
   }
 }
