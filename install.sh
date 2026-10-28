@@ -193,7 +193,7 @@ if [ "$KERNEL" != "Linux" ]; then
   printf "\n" >&2
   err "EdgeViss Local only runs on Linux -- this machine reports '$KERNEL'. \
 If you're provisioning a gateway FROM a Windows or Linux laptop, use the EdgeViss \
-Provisioner app instead (it SSHes into the real gateway and runs this script there \
+EdgeVISS Connect app instead (it SSHes into the real gateway and runs this script there \
 for you) -- see the Devices page in EdgeViss Cloud Manager, or \
 https://github.com/proeliumdevelopers/edgeviss/tree/main/provisioner."
 fi
@@ -802,7 +802,6 @@ else
     env_add PLATFORM_REGISTRY_URL "http://platform-registry:59890"
   fi
   env_add GATEWAY_BIND_ADDRESS "0.0.0.0"
-  env_add FEATURE_REMOTE_ACCESS "true"
   env_add EDGEVISS_PROFILE "$PROFILE_PREV"
   # An explicit --profile on an existing install is the only thing that changes its profile (plc-only -> full).
   if [ "$PROFILE_EXPLICIT" = "1" ] && [ "$PROFILE" != "$PROFILE_PREV" ]; then
@@ -862,9 +861,6 @@ services:
       FEATURE_RULES: \${FEATURE_RULES:-false}
       FEATURE_SCHEDULER: \${FEATURE_SCHEDULER:-false}
       FEATURE_NOTIFICATIONS: \${FEATURE_NOTIFICATIONS:-false}
-      # Cloud Remote Access capability. On by default: a tunnel still needs
-      # the System -> Remote Access toggle plus Manager-delivered credentials.
-      FEATURE_REMOTE_ACCESS: \${FEATURE_REMOTE_ACCESS:-true}
       PLATFORM_METADATA_URL: \${PLATFORM_METADATA_URL}
       PLATFORM_DATA_URL: \${PLATFORM_DATA_URL}
       PLATFORM_COMMAND_URL: \${PLATFORM_COMMAND_URL}

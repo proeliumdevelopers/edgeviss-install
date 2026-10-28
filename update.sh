@@ -738,24 +738,6 @@ if [ "$DRY_RUN" = "0" ] && docker network inspect "$PLATFORM_NETWORK" >/dev/null
   fi
 fi
 
-# ── Step 4c2: Remote Access capability flag ────────────────────────────────────
-# FEATURE_REMOTE_ACCESS defaults to false in the binary and older compose files
-# never set it, so Manager Remote Access sessions were refused silently
-# (reported "failed") on installs made by install.sh. The .env reaches the
-# gateway through env_file; the System toggle and Manager credentials still
-# gate every tunnel.
-step "Ensuring Remote Access capability"
-if [ "$DRY_RUN" = "0" ]; then
-  if grep -q '^FEATURE_REMOTE_ACCESS=' "$INSTALL_DIR/.env" 2>/dev/null || grep -q 'FEATURE_REMOTE_ACCESS:' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-    ok "Remote Access capability already configured"
-  else
-    printf '\n# Cloud Remote Access capability (System toggle + Manager credentials still gate it)\nFEATURE_REMOTE_ACCESS=true\n' >> "$INSTALL_DIR/.env"
-    ok "Enabled the Remote Access capability in .env"
-  fi
-else
-  ok "[dry-run] Would ensure FEATURE_REMOTE_ACCESS is set"
-fi
-
 # ── Step 4c3: Docker starts at boot ────────────────────────────────────────────
 step "Ensuring Docker starts at boot"
 if [ "$DRY_RUN" = "0" ]; then
