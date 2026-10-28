@@ -1,11 +1,15 @@
 {
-  "version": "0.3.14",
-  "notes": "PLC Access: this computer is named in its sign-in; update check and status fixes.",
-  "pub_date": "2026-10-28T03:45:20.513Z",
+  "version": "0.3.15",
+  "notes": "EdgeVISS Connect 0.3.15",
+  "pub_date": "2026-10-28T19:07:12.165Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFlJeldocFdjZzM1K0xnSldWamh3R2tTVm9pQlY3eVdha1hFektKWTh5VHY4UmlrMlhZUUpXUnZLU1VwUTBEaGg2bDlFZDI5ZHp3K252ZkdvbEYxd0FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMTU5MDM2CWZpbGU6RWRnZVZpc3MgUHJvdmlzaW9uZXJfMC4zLjE0X3g2NC1zZXR1cC5leGUKc1ZwalhEVUZ5YTZuV2tZOTRyaTNrY2haUXBFbjNwTTBlaTdPR1pZRjZzWDA5YS9naGVFN0xBS2VtUVl0SkpnZ3hHZHQ0SjRuR0NGMERuYjhWRVpHQUE9PQo=",
-      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.14/edgeviss-provisioner-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSGQrZVljcmhrUmZNQ2lqL2E4UkVDWXovTHpNNmpsU2VwVW5wTkRDUWt1S0NLTFo1am9BUVlVbGxOMUdMd2U4UmtPZkxzS2pGMlMrU3FPMG9tS014SXc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE0MzA2CWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMTVfeDY0LXNldHVwLmV4ZQpmL3hWWjN0WlNrb1cyYXFsbVZweStiZUwvckxUZ1ZiMFMzWXdyN3I4NFl2VWMzd1FrYlZJMmpka1N1VDVKVFhpRGhMNXltSnh0OE1OQ1NDaFpMVXpCQT09Cg==",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.15/edgeviss-provisioner-setup.exe"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSGNXUGltb1pwRng5d3Z5VG5jVHJIbFFoSm1LSXNWV1FGYTluaUlQVzRDTWNJdFhObEtSNkdWZzFkbkpzSm1DNDlsdDZVZzFYd2pTejZDN2k5dU5FVVFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjEwNjU3CWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMTVfYW1kNjQuQXBwSW1hZ2UKMjVyWVV2aDVRNExzOC96RVJiR0hMenRWQjZXTlNhQ21qMzZsOUh1YTh5d2VOYi9rYVBTSTNqWGxBNktyMmtWNXJkUEhzRFJ3V2VUOEhXVWUyRnpLQmc9PQo=",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.15/edgeviss-provisioner.AppImage"
     }
   }
 }
