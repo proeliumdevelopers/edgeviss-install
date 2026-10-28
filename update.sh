@@ -608,6 +608,12 @@ if [ "$DRY_RUN" = "0" ]; then
       GATEWAY_PORT: \${GATEWAY_PORT:-${GW_PORT_DEFAULT:-8080}}
     volumes:
       - plcaccess-data:/var/lib/edgeviss-plcaccess
+    healthcheck:
+      test: ['CMD-SHELL', 'test -n \"\$\$(find /tmp/plcaccess-alive -mmin -1 2>/dev/null)\"']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 "
       # Service before the top-level volumes: key, its volume right after it.
       if PB="$PLCACCESS_BLOCK" awk '/^volumes:/ && !done { printf "%s\n", ENVIRON["PB"]; print; print "  plcaccess-data:"; done=1; next } { print }' "$COMPOSE_YML" > "$COMPOSE_YML.tmp" \

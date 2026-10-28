@@ -10,6 +10,11 @@
 # If you already have an existing platform deployment to connect to
 # instead, set EDGEVISS_BUNDLE_PLATFORM=0 and configure the endpoint URLs
 # in .env after install.
+#
+# --profile plc-only (or EDGEVISS_PROFILE=plc-only) installs the lean "PLC Access / PLC Studio only" gateway for an
+# organization that did not buy the EdgeVISS data platform: the gateway, the connector and the PLC access agent, and NO
+# EdgeX / MQTT / eKuiper stack. The profile is stored in .env (EDGEVISS_PROFILE) and kept by update.sh. A plc-only gateway
+# is upgraded to the data platform by re-running with --profile full; the reverse is not supported.
 
 set -e
 
@@ -55,6 +60,38 @@ REGISTRY="${EDGEVISS_REGISTRY:-ghcr.io/proeliumdevelopers}"
 IMAGE="${EDGEVISS_IMAGE:-edgeviss}"
 VERSION="${EDGEVISS_VERSION:-latest}"
 INSTALL_DIR="${EDGEVISS_DIR:-/opt/edgeviss}"
+
+# ── Product profile: full (default) or plc-only ───────────────────────────────
+# An explicit --profile / EDGEVISS_PROFILE wins. Otherwise an existing install keeps the profile stored in its .env, so a
+# plain re-run or --reconfigure never changes what a gateway is.
+PROFILE_ARG="${EDGEVISS_PROFILE:-}"
+_prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --profile=*) PROFILE_ARG="${arg#--profile=}" ;;
+    --plc-only)  PROFILE_ARG="plc-only" ;;
+  esac
+  [ "$_prev" = "--profile" ] && PROFILE_ARG="$arg"
+  _prev="$arg"
+done
+PROFILE_PREV=$(sed -n 's/^EDGEVISS_PROFILE=//p' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | tr -d '\r' | tr -d "\"' ")
+[ -n "$PROFILE_PREV" ] || PROFILE_PREV="full"
+PROFILE_EXPLICIT=0
+[ -n "$PROFILE_ARG" ] && PROFILE_EXPLICIT=1
+PROFILE="${PROFILE_ARG:-$PROFILE_PREV}"
+case "$PROFILE" in
+  plc-only|plc_only) PROFILE="plc-only" ;;
+  full) : ;;
+  *) printf "ERROR: --profile must be 'full' or 'plc-only'\n" >&2; exit 1 ;;
+esac
+case "$PROFILE_PREV" in plc_only) PROFILE_PREV="plc-only" ;; esac
+if [ "$PROFILE" = "plc-only" ] && [ -f "$INSTALL_DIR/.env" ] && [ "$PROFILE_PREV" != "plc-only" ]; then
+  printf "\nERROR: this gateway already runs the EdgeVISS data platform; it cannot be re-installed as plc-only.\n" >&2
+  printf "Install a new PLC-only gateway on its own machine instead.\n\n" >&2
+  exit 1
+fi
+PLC_ONLY=0
+[ "$PROFILE" = "plc-only" ] && PLC_ONLY=1
 # Must run as root: it writes /opt/edgeviss, /etc/docker and systemd files.
 if [ "$(id -u)" != "0" ]; then
   printf "\nERROR: run the installer as root, e.g.\n  curl -fsSL https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/install.sh | sudo bash\n\n" >&2
@@ -99,6 +136,8 @@ if [ "$INSTALL_MODE" = "production" ] && [ "$VERSION" = "latest" ]; then
 fi
 PORT="${GATEWAY_UI_PORT:-8080}"
 BUNDLE_PLATFORM="${EDGEVISS_BUNDLE_PLATFORM:-1}"
+# A plc-only gateway never installs the data stack.
+[ "$PLC_ONLY" = "1" ] && BUNDLE_PLATFORM=0
 # Registry the bundled platform images are pulled from — defaults to our own
 # mirror (see deploy/mirror-platform-images.sh), never the upstream project's.
 MIRROR_REGISTRY="${EDGEVISS_MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}"
@@ -523,6 +562,8 @@ if [ "$BUNDLE_PLATFORM" = "1" ]; then
       -o "$INSTALL_DIR/platform-compose.yml" || err "Could not fetch platform-compose.yml"
   COMPOSE_FILES="-f docker-compose.yml -f platform-compose.yml"
   ok "Bundled platform stack ready"
+elif [ "$PLC_ONLY" = "1" ]; then
+  ok "plc-only profile: the EdgeVISS data platform (EdgeX, MQTT, stream engine) is not installed"
 else
   warn "EDGEVISS_BUNDLE_PLATFORM=0 — connecting to an existing platform deployment instead"
   warn "After editing .env with your real platform host, run: $0 --reconfigure"
@@ -601,6 +642,16 @@ PLATFORM_SCHEDULER_URL=http://platform-scheduler:59863
 PLATFORM_NOTIFICATIONS_URL=http://platform-notifications:59860
 PLATFORM_RULES_URL=http://platform-rules:59720
 PLATFORM_REGISTRY_URL=http://platform-registry:59890"
+  elif [ "$PLC_ONLY" = "1" ]; then
+    # No data platform on this gateway: the endpoints stay valid URLs that nothing answers, and the gateway never calls them
+    # (EDGEVISS_PROFILE=plc-only turns those loops and routes off).
+    PLATFORM_URLS="PLATFORM_METADATA_URL=http://127.0.0.1:59881
+PLATFORM_DATA_URL=http://127.0.0.1:59880
+PLATFORM_COMMAND_URL=http://127.0.0.1:59882
+PLATFORM_SCHEDULER_URL=http://127.0.0.1:59863
+PLATFORM_NOTIFICATIONS_URL=http://127.0.0.1:59860
+PLATFORM_RULES_URL=http://127.0.0.1:59720
+PLATFORM_REGISTRY_URL=http://127.0.0.1:59890"
   else
     PLATFORM_URLS="PLATFORM_METADATA_URL=http://<your-platform-host>:59881
 PLATFORM_DATA_URL=http://<your-platform-host>:59880
@@ -636,6 +687,9 @@ PLATFORM_REGISTRY_URL=http://<your-platform-host>:59890"
 # After editing, restart with: cd $INSTALL_DIR && docker compose $COMPOSE_FILES restart
 
 GATEWAY_PORT=$PORT
+# Product profile: full (EdgeVISS data platform) or plc-only (PLC Access / PLC Studio, no EdgeX/MQTT stack). Set by
+# install.sh --profile; update.sh keeps it. What the organization may use is decided in EdgeVISS Manager on top of this.
+EDGEVISS_PROFILE=$PROFILE
 # Host interface for the clear-text application listener. Fresh production
 # installs default to loopback so users reach EdgeViss through the configured
 # HTTPS reverse proxy, not by bypassing TLS on the raw application port.
@@ -729,7 +783,7 @@ ALARM_INGEST_TOKEN=$ALARM_INGEST_TOKEN
 # FEATURE_NOTIFICATIONS=true   # IT-alerting subscriptions, separate from the Alarms module
 ENV
   ok ".env created with auto-generated secret"
-  if [ "$BUNDLE_PLATFORM" != "1" ]; then
+  if [ "$BUNDLE_PLATFORM" != "1" ] && [ "$PLC_ONLY" != "1" ]; then
     warn "IMPORTANT: Edit $INSTALL_DIR/.env to set your platform service endpoint addresses"
   fi
 else
@@ -749,6 +803,16 @@ else
   fi
   env_add GATEWAY_BIND_ADDRESS "0.0.0.0"
   env_add FEATURE_REMOTE_ACCESS "true"
+  env_add EDGEVISS_PROFILE "$PROFILE_PREV"
+  # An explicit --profile on an existing install is the only thing that changes its profile (plc-only -> full).
+  if [ "$PROFILE_EXPLICIT" = "1" ] && [ "$PROFILE" != "$PROFILE_PREV" ]; then
+    sed -i "s/^EDGEVISS_PROFILE=.*/EDGEVISS_PROFILE=$PROFILE/" "$INSTALL_DIR/.env"
+    if [ "$PROFILE" = "full" ] && [ "$BUNDLE_PLATFORM" = "1" ]; then
+      # Upgrade from plc-only: the data stack is installed below, so point the gateway at it.
+      sed -i 's#^PLATFORM_METADATA_URL=.*#PLATFORM_METADATA_URL=http://platform-metadata:59881#; s#^PLATFORM_DATA_URL=.*#PLATFORM_DATA_URL=http://platform-data:59880#; s#^PLATFORM_COMMAND_URL=.*#PLATFORM_COMMAND_URL=http://platform-command:59882#; s#^PLATFORM_SCHEDULER_URL=.*#PLATFORM_SCHEDULER_URL=http://platform-scheduler:59863#; s#^PLATFORM_NOTIFICATIONS_URL=.*#PLATFORM_NOTIFICATIONS_URL=http://platform-notifications:59860#; s#^PLATFORM_RULES_URL=.*#PLATFORM_RULES_URL=http://platform-rules:59720#; s#^PLATFORM_REGISTRY_URL=.*#PLATFORM_REGISTRY_URL=http://platform-registry:59890#' "$INSTALL_DIR/.env"
+      ok "Upgrading this gateway from plc-only to the full EdgeVISS data platform"
+    fi
+  fi
   chmod 600 "$INSTALL_DIR/.env"
   [ -n "$ENV_ADDED" ] && ok "Added settings this version needs to the existing .env:$ENV_ADDED"
 fi
@@ -905,6 +969,13 @@ services:
       GATEWAY_PORT: \${GATEWAY_PORT:-$PORT}
     volumes:
       - plcaccess-data:/var/lib/edgeviss-plcaccess
+    # The agent has no listener to probe: it rewrites a heartbeat file every few seconds, and a stuck agent stops doing so.
+    healthcheck:
+      test: ['CMD-SHELL', 'test -n "\$\$(find /tmp/plcaccess-alive -mmin -1 2>/dev/null)"']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   gateway-data:
