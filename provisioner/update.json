@@ -1,15 +1,15 @@
 {
-  "version": "0.3.18",
-  "notes": "EdgeVISS Connect 0.3.18",
-  "pub_date": "2026-10-28T20:48:14.843Z",
+  "version": "0.3.19",
+  "notes": "EdgeVISS Connect 0.3.19",
+  "pub_date": "2026-10-29T05:11:30.987Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFFhdzJuay95dVRKUGJ5TElUM3lpeUtCTktuVU9JMnJmMTRoclNiQmZnTEdtWUMwYUtyS0hUSjZsQTdHT28zRno2d0RZd3RndUFySE1yWVlsR2h4T3dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjE5NjcyCWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMThfeDY0LXNldHVwLmV4ZQpKSXd0WDhOS1U1VmRkL3FNZVFuVDRSMGRWUnd6MlZEVDhaTVF3Vk5Scm1tWnE4L2tMaDQ4ZFNlenNrcDh1THNzVzlPUjE0Qys0Z0ovVmQyUTVCUFlCUT09Cg==",
-      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.18/edgeviss-provisioner-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFNkcm9wNmZQREI2R1lSMmhxMEdJQU9sLzBreDlsd0NubUtUL3lFb05nTmRSeE04a1Fpa09tR21FZkJQM29zYTRDS1hIUW50R2VSejkrNEVtT3d5RGc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjQ5NzY3CWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMTlfeDY0LXNldHVwLmV4ZQpZem5mdFE2cmlrTWFreGordTVHL1NiWGJ0dmZoblpyYWVqYTdwdnNuTnliNTFEbWdvRkJxOWN5WVZaVkxuZUJ2NGltUmRpb1dqKzdsY3QyT29RQ0REZz09Cg==",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.19/edgeviss-provisioner-setup.exe"
     },
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFpENG5TQ1plalhoMkg0a3BieWJqdUg4SUMxellnbkRiOU5uaVltTDQrWXQzeStpN3NDQmdLNGl3TktLK0pBYkpsTzIyS2JLOVREakVOd0RZSmNZMmdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjIwMzU5CWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMThfYW1kNjQuQXBwSW1hZ2UKalRQdk1BMzVnOE92elE1SGRuWVFjYm1aUVZOYzRTeTBTYUtjbFpjRzdnQ3FwS0JWVW5td1dFdEZMYzlLYTNuN1pwejVHQ3JZN0diOE9PeVMzYnd5QkE9PQo=",
-      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.18/edgeviss-provisioner.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN3poa2xiTURPSFYrand5ZUNlc1p5MkJjSGdIUTdXZ3hES0Q2a0xkRzNKRW1NTzM1S1NQQmRGZlYrazF3aUtNZ1lLVTZqS0J3RVhEUEZtNEVSM0hyMDVlN3VqMFp0QVFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjUwNTUzCWZpbGU6RWRnZVZJU1MgQ29ubmVjdF8wLjMuMTlfYW1kNjQuQXBwSW1hZ2UKRisyV2tWU3FaOXMva2xqRjl5cDl1VjRsb1QvdUxNZGpGa1RwTEdqMmJvaFFVa3g0UUJ6Z3NKRUsrVHRMN2pXNFZXRlpTekNnZ0lJVmY3NVNDekhkQ0E9PQo=",
+      "url": "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/provisioner/0.3.19/edgeviss-provisioner.AppImage"
     }
   }
 }
