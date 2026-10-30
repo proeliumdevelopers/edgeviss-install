@@ -292,6 +292,56 @@ if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl is-enabled docker 2>/d
   fi
 fi
 
+# Docker can start a container with NO network attached when it restarts everything right after a boot (seen on WSL: the
+# platform data/scheduler/notifications services sat in "Waiting for configuration provider" forever and the dashboard said
+# "platform service unreachable"). A small timer finds such containers and recreates them from their compose files.
+if command -v systemctl >/dev/null 2>&1 && [ -d /etc/systemd/system ] && [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then
+  cat > /usr/local/sbin/edgeviss-net-heal.sh <<'EOF'
+#!/bin/sh
+# Recreates EdgeVISS containers that Docker started without any network. Safe to run any time; does nothing when all is well.
+docker info >/dev/null 2>&1 || exit 0
+for c in $(docker ps --format '{{.Names}}'); do
+  case "$c" in edgeviss-*|platform-*) ;; *) continue ;; esac
+  [ "$(docker inspect -f '{{len .NetworkSettings.Networks}}' "$c" 2>/dev/null)" = 0 ] || continue
+  dir=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$c")
+  cfg=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$c")
+  svc=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")
+  proj=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c")
+  [ -n "$dir" ] && [ -n "$cfg" ] && [ -n "$svc" ] || continue
+  files=""
+  for f in $(echo "$cfg" | tr ',' ' '); do files="$files -f $f"; done
+  echo "edgeviss-net-heal: $c has no network, recreating"
+  (cd "$dir" && docker compose -p "$proj" $files up -d --force-recreate --no-deps "$svc")
+done
+EOF
+  chmod 755 /usr/local/sbin/edgeviss-net-heal.sh
+  cat > /etc/systemd/system/edgeviss-net-heal.service <<'EOF'
+[Unit]
+Description=Recreate EdgeVISS containers that started without a network
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/edgeviss-net-heal.sh
+EOF
+  cat > /etc/systemd/system/edgeviss-net-heal.timer <<'EOF'
+[Unit]
+Description=Check EdgeVISS containers have a network
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload 2>/dev/null
+  systemctl enable --now edgeviss-net-heal.timer >/dev/null 2>&1 \
+    && ok "Installed the network self-heal check (recreates a container Docker started without a network)" \
+    || warn "Could not enable the network self-heal timer (systemctl enable --now edgeviss-net-heal.timer)"
+fi
+
 # A legacy Node-RED left running beside EdgeVISS polls the same RS-485 bus:
 # two Modbus RTU masters corrupt each other's frames ("unexpected EOF",
 # missing readings). It is never stopped automatically -- it may still be
