@@ -112,7 +112,7 @@ fi
 # Old version tags are not "dangling", so `docker image prune` never removed them: every update left the previous gateway and connector
 # images behind and a small disk (a Pi) eventually could not take the next one. Keep what runs, the rollback image and the target.
 prune_old_versions() {
-  for repo in "${REGISTRY}/${IMAGE}" "${REGISTRY}/${IMAGE}-connector"; do
+  for repo in "${REGISTRY}/${IMAGE}" "${REGISTRY}/${IMAGE}-connector" "${REGISTRY}/${IMAGE}-plcaccess"; do
     docker images --format '{{.Repository}}:{{.Tag}}' "$repo" 2>/dev/null | while read -r ref; do
       case "$ref" in
         *:rollback|*:"$TARGET"|*:"$CURRENT"|*:"<none>") continue ;;

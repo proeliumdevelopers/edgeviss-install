@@ -138,6 +138,17 @@ PORT="${GATEWAY_UI_PORT:-8080}"
 BUNDLE_PLATFORM="${EDGEVISS_BUNDLE_PLATFORM:-1}"
 # A plc-only gateway never installs the data stack.
 [ "$PLC_ONLY" = "1" ] && BUNDLE_PLATFORM=0
+
+# ── Memory floor ───────────────────────────────────────────────────────────────
+# The data platform (EdgeX, stream engine, broker, drivers) needs a 2 GB device; a 1 GB Raspberry Pi is a PLC-access-only box
+# (--profile plc-only: three small containers). EDGEVISS_ALLOW_LOW_RAM=1 overrides the refusal.
+MEM_MB=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+case "$MEM_MB" in ''|*[!0-9]*) MEM_MB=0 ;; esac
+if [ "$PLC_ONLY" != "1" ] && [ "$MEM_MB" -gt 0 ] && [ "$MEM_MB" -lt 1700 ] && [ "${EDGEVISS_ALLOW_LOW_RAM:-0}" != "1" ]; then
+  printf "\n  ERROR: this device has %s MB of RAM; the EdgeVISS data platform needs a 2 GB device or more.\n" "$MEM_MB" >&2
+  printf "  For PLC Access only, install the lean profile instead:  --profile plc-only\n\n" >&2
+  exit 1
+fi
 # Registry the bundled platform images are pulled from — defaults to our own
 # mirror (see deploy/mirror-platform-images.sh), never the upstream project's.
 MIRROR_REGISTRY="${EDGEVISS_MIRROR_REGISTRY:-ghcr.io/proeliumdevelopers}"
@@ -867,6 +878,12 @@ else
 fi
 
 # ── Write docker-compose.yml ───────────────────────────────────────────────────
+# A plc-only gateway is a small box: each container gets a memory ceiling so one service can never starve the device.
+MEM_GATEWAY=""; MEM_CONNECTOR=""; MEM_PLCACCESS=""; GOMEM_GATEWAY=""
+if [ "$PLC_ONLY" = "1" ]; then
+  MEM_GATEWAY="mem_limit: 192m"; MEM_CONNECTOR="mem_limit: 64m"; MEM_PLCACCESS="mem_limit: 96m"
+  GOMEM_GATEWAY="GOMEMLIMIT: 160MiB"
+fi
 NETWORK_BLOCK=""
 NETWORK_REF=""
 if [ "$BUNDLE_PLATFORM" = "1" ]; then
@@ -894,6 +911,7 @@ services:
     container_name: edgeviss-gateway
     restart: unless-stopped
     logging: *capped-logs
+    $MEM_GATEWAY
     ports:
       - "\${GATEWAY_BIND_ADDRESS:-0.0.0.0}:\${GATEWAY_PORT:-$PORT}:\${GATEWAY_PORT:-$PORT}"
     env_file:
@@ -903,6 +921,7 @@ services:
       GATEWAY_ENV: \${GATEWAY_ENV:-production}
       SESSION_SECRET: \${SESSION_SECRET}
       SESSION_SECURE: \${SESSION_SECURE:-false}
+      $GOMEM_GATEWAY
       WRITE_COMMANDS_ENABLED: \${WRITE_COMMANDS_ENABLED:-false}
       FEATURE_WRITE_COMMANDS: \${FEATURE_WRITE_COMMANDS:-false}
       # Off by default -- advanced/admin tools, not the core OT commissioning
@@ -982,6 +1001,7 @@ services:
     container_name: edgeviss-connector
     restart: unless-stopped
     logging: *capped-logs
+    $MEM_CONNECTOR
     environment:
       CONNECTOR_LISTEN_ADDR: ":8090"
       CONNECTOR_LOCAL_TOKEN: \${CONNECTOR_LOCAL_TOKEN}
@@ -1004,6 +1024,7 @@ services:
     container_name: edgeviss-plcaccess
     restart: unless-stopped
     logging: *capped-logs
+    $MEM_PLCACCESS
     network_mode: host
     cap_add:
       - NET_ADMIN
