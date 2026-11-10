@@ -1,11 +1,11 @@
 #!/bin/sh
-# EdgeViss Gateway Installer
+# EdgeVISS Gateway Installer
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/install.sh | bash
 #   or with a specific version:
 #   curl -fsSL .../install.sh | EDGEVISS_VERSION=v0.2.0 bash
 #
-# By default this installs EdgeViss AND its backing platform services
+# By default this installs EdgeVISS AND its backing platform services
 # together — one command, fully self-contained, nothing else to set up.
 # If you already have an existing platform deployment to connect to
 # instead, set EDGEVISS_BUNDLE_PLATFORM=0 and configure the endpoint URLs
@@ -50,7 +50,7 @@ case "$MODBUS_RTU_MODE" in
   *) printf "ERROR: EDGEVISS_ENABLE_MODBUS_RTU must be 0 or 1\n" >&2; exit 1 ;;
 esac
 if [ "$INSTALL_MODE" = "production" ] && [ "${EDGEVISS_EXTERNAL_HTTPS:-0}" != "1" ]; then
-  printf "\nERROR: production install requires HTTPS in front of EdgeViss.\n" >&2
+  printf "\nERROR: production install requires HTTPS in front of EdgeVISS.\n" >&2
   printf "Set EDGEVISS_EXTERNAL_HTTPS=1 only after configuring the reverse proxy/TLS endpoint,\n" >&2
   printf "then re-run with --production (or EDGEVISS_INSTALL_MODE=production).\n\n" >&2
   exit 1
@@ -161,7 +161,7 @@ case "$ARCH" in
   arm64)   PLATFORM="linux/arm64" ;;
   armv7l|armv6l|armhf)
     printf "\n  ERROR: 32-bit ARM (%s) is not supported.\n\n" "$ARCH" >&2
-    printf "  This is not an EdgeViss limitation — the platform services this\n" >&2
+    printf "  This is not an EdgeVISS limitation — the platform services this\n" >&2
     printf "  installer bundles have never published a 32-bit ARM build, at any\n" >&2
     printf "  version. There is no 32-bit build to fall back to.\n\n" >&2
     printf "  Fix: reflash this gateway with 64-bit Raspberry Pi OS (or any other\n" >&2
@@ -184,7 +184,7 @@ step() { printf "\n${GREEN}▶${NC} %s\n" "$1"; }
 
 echo ""
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║   EdgeViss Gateway Installer         ║"
+echo "  ║   EdgeVISS Gateway Installer         ║"
 echo "  ║   Version: ${VERSION}                "
 echo "  ╚══════════════════════════════════════╝"
 echo ""
@@ -192,7 +192,7 @@ echo ""
 # ── Platform gate ──────────────────────────────────────────────────────────────
 # This has to run before anything else -- previously the first real check was
 # "is Docker installed," which meant running this on the wrong machine (a
-# technician's own Windows laptop, most commonly -- EdgeViss Local only ever
+# technician's own Windows laptop, most commonly -- EdgeVISS Local only ever
 # runs ON the gateway itself, never on the laptop provisioning it) failed
 # confusingly partway through with a Docker/systemd error that gave no hint
 # what actually went wrong. Fail here instead, immediately, with the actual
@@ -202,20 +202,20 @@ step "Checking this is a supported gateway OS"
 KERNEL=$(uname -s)
 if [ "$KERNEL" != "Linux" ]; then
   printf "\n" >&2
-  err "EdgeViss Local only runs on Linux -- this machine reports '$KERNEL'. \
-If you're provisioning a gateway FROM a Windows or Linux laptop, use the EdgeViss \
+  err "EdgeVISS Local only runs on Linux -- this machine reports '$KERNEL'. \
+If you're provisioning a gateway FROM a Windows or Linux laptop, use the \
 EdgeVISS Connect app instead (it SSHes into the real gateway and runs this script there \
-for you) -- see the Devices page in EdgeViss Cloud Manager, or \
+for you) -- see the Devices page in EdgeVISS Manager, or \
 https://github.com/proeliumdevelopers/edgeviss/tree/main/provisioner."
 fi
 
-# Debian/Ubuntu-family only -- not because EdgeViss itself needs anything
+# Debian/Ubuntu-family only -- not because EdgeVISS itself needs anything
 # distro-specific, but because the automatic Docker install below (a real
 # commercial gap this closes: the old behavior was just linking to Docker's
 # docs and giving up) uses apt and Docker's own Debian/Ubuntu convenience
 # script. A non-Debian Linux with Docker already installed manually will
 # still pass the check right below this one and continue normally -- this
-# is a warning, not a hard stop, since EdgeViss itself has no Debian
+# is a warning, not a hard stop, since EdgeVISS itself has no Debian
 # dependency, only this installer's auto-install path does.
 if [ -r /etc/os-release ]; then
   # os-release defines its own VERSION (e.g. "13 (trixie)"); sourcing it
@@ -227,7 +227,7 @@ if [ -r /etc/os-release ]; then
     *debian*|*ubuntu*) : ;;
     *)
       warn "This looks like '${PRETTY_NAME:-an unrecognized distro}', not Debian/Ubuntu. \
-EdgeViss itself doesn't require Debian -- but if Docker isn't already installed, this \
+EdgeVISS itself doesn't require Debian -- but if Docker isn't already installed, this \
 script's automatic install (below) only knows how to do that on Debian/Ubuntu. \
 Install Docker yourself first if this fails."
       ;;
@@ -397,7 +397,7 @@ MIN_FREE_KB=2097152  # 2GB
 AVAIL_KB=$(df -Pk "$(dirname "$INSTALL_DIR")" 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -lt "$MIN_FREE_KB" ]; then
   AVAIL_MB=$((AVAIL_KB / 1024))
-  warn "Only ${AVAIL_MB}MB free on this disk -- EdgeViss and its bundled platform images \
+  warn "Only ${AVAIL_MB}MB free on this disk -- EdgeVISS and its bundled platform images \
 need at least 2GB. Installation may fail partway through, or leave no headroom for \
 logs/updates afterward. Free up space before continuing if possible."
 else
@@ -530,7 +530,7 @@ if [ "$RECONFIGURE" = "1" ]; then
       ok "Secure-mode EdgeX detected (nginx :8443 responding)"
       TOKEN_FILE="/tmp/edgex/secrets/edgeviss/secrets-token.json"
       if [ -f "$TOKEN_FILE" ]; then
-        ok "Service token found at $TOKEN_FILE — EdgeViss shares this host with EdgeX's security stack"
+        ok "Service token found at $TOKEN_FILE — EdgeVISS shares this host with EdgeX's security stack"
         cp "$(dirname "$0")/add-edgeviss-secrets.yml" "$INSTALL_DIR/add-edgeviss-secrets.yml" 2>/dev/null || \
           curl -fsSL "https://raw.githubusercontent.com/proeliumdevelopers/edgeviss-install/main/add-edgeviss-secrets.yml" \
             -o "$INSTALL_DIR/add-edgeviss-secrets.yml" || err "Could not fetch add-edgeviss-secrets.yml"
@@ -546,14 +546,14 @@ if [ "$RECONFIGURE" = "1" ]; then
         ok "Gateway restarted — service-mode JWT auth active"
       else
         warn "Secure-mode EdgeX detected, but no service token at $TOKEN_FILE"
-        warn "Service-mode auth requires EdgeViss and EdgeX's security-secretstore-setup"
+        warn "Service-mode auth requires EdgeVISS and EdgeX's security-secretstore-setup"
         warn "to run on the SAME docker host (it reads a bind-mounted file, not a shared volume)."
         warn "On the EdgeX host's own compose file, add:"
         warn "    security-secretstore-setup:"
         warn "      environment:"
         warn "        ADD_SECRETSTORE_TOKENS: edgeviss"
         warn "then restart security-secretstore-setup and re-run: $0 --reconfigure"
-        warn "If EdgeViss runs on a different host than EdgeX, service mode is not available —"
+        warn "If EdgeVISS runs on a different host than EdgeX, service mode is not available —"
         warn "use 'external' mode instead: set EDGEX_AUTH_TOKEN in .env (see"
         warn "docs/adr-001-edgex-authentication.md for the full explanation)."
       fi
@@ -638,7 +638,11 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   # Generate a strong random session secret
   SECRET=$(openssl rand -base64 48 2>/dev/null \
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
-    || echo "CHANGE_THIS_TO_A_RANDOM_48_CHAR_STRING")
+    || true)
+  if [ "${#SECRET}" -lt 32 ]; then
+    # Never fall back to a known placeholder: secrets stored on the gateway (broker passwords, tokens) are encrypted with this value.
+    err "could not generate a random session secret (openssl and /dev/urandom both failed). Install openssl and run the installer again."
+  fi
 
   # Recovery token: the ONLY way back in if every engineer/admin account's
   # password is lost (see backend/internal/api/auth_password.go's
@@ -651,7 +655,10 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   # this script is what actually activates the feature by default.
   RECOVERY_TOKEN=$(openssl rand -hex 24 2>/dev/null \
     || cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 2>/dev/null \
-    || echo "CHANGE_THIS_TO_A_RANDOM_TOKEN")
+    || true)
+  if [ "${#RECOVERY_TOKEN}" -lt 24 ]; then
+    err "could not generate a random recovery token (openssl and /dev/urandom both failed). Install openssl and run the installer again."
+  fi
 
   # Machine-to-machine secret for POST /api/system/connector-update
   # (handleConnectorSelfUpdate, backend/internal/api/system_edgex.go).
@@ -743,7 +750,7 @@ PLATFORM_REGISTRY_URL=http://<your-platform-host>:59890"
   fi
 
   cat > "$INSTALL_DIR/.env" << ENV
-# ── EdgeViss Gateway Configuration ───────────────────────────────────────────
+# ── EdgeVISS Gateway Configuration ───────────────────────────────────────────
 # Edit this file to connect to your platform services.
 # After editing, restart with: cd $INSTALL_DIR && docker compose $COMPOSE_FILES restart
 
@@ -752,7 +759,7 @@ GATEWAY_PORT=$PORT
 # install.sh --profile; update.sh keeps it. What the organization may use is decided in EdgeVISS Manager on top of this.
 EDGEVISS_PROFILE=$PROFILE
 # Host interface for the clear-text application listener. Fresh production
-# installs default to loopback so users reach EdgeViss through the configured
+# installs default to loopback so users reach EdgeVISS through the configured
 # HTTPS reverse proxy, not by bypassing TLS on the raw application port.
 GATEWAY_BIND_ADDRESS=$GENERATED_BIND_ADDRESS
 # Installation posture. --production (or EDGEVISS_INSTALL_MODE=production)
@@ -1186,7 +1193,7 @@ done
 [ "$TRIES" -le 15 ] && ok "Gateway is healthy"
 
 if [ "$ENROLL" = "1" ]; then
-  step "Enrolling with EdgeVISS Cloud Manager ($ACT_URL)"
+  step "Enrolling with EdgeVISS Manager ($ACT_URL)"
   ENROLL_RESULT=""
   for _ in $(seq 1 60); do
     ENROLL_RESULT=$(docker logs edgeviss-gateway 2>&1 | grep -o 'manager activation: [a-z, ]*' | tail -1)
@@ -1244,7 +1251,7 @@ GATEWAY_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
-echo "  ║   EdgeViss is running!                               ║"
+echo "  ║   EdgeVISS is running!                               ║"
 echo "  ║                                                      ║"
 if [ "$INSTALL_MODE" = "production" ]; then
   echo "  ║   Open:  your configured HTTPS endpoint             "

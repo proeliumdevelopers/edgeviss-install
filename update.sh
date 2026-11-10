@@ -1,5 +1,5 @@
 #!/bin/sh
-# EdgeViss Gateway Updater
+# EdgeVISS Gateway Updater
 # Usage:
 #   ./update.sh v0.4.0              — update to specific version (required in production)
 #   ./update.sh v0.4.0 --dry-run   — preview steps without applying anything
@@ -97,7 +97,7 @@ CURRENT=$(printf '%s' "$CUR_REF" | sed 's/.*://' | tr -d ' ')
 [ -n "$CURRENT" ] || CURRENT=$(grep "image:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | head -1 | sed 's/.*://g' | tr -d ' ' || echo "unknown")
 
 echo ""
-echo "  EdgeViss Gateway Updater"
+echo "  EdgeVISS Gateway Updater"
 echo "  Current : ${CURRENT}"
 echo "  Target  : ${TARGET}"
 echo "  Gateway : ${DEPLOY_ENV}"
@@ -435,7 +435,7 @@ if [ "$DRY_RUN" = "0" ]; then
   # eKuiper alarm rule's REST sink was failing 100% of the time
   # (records_out_total: 0, exceptions_total = every record, error "lookup
   # gateway-ui-api ... no such host") -- meaning NO alarm setpoint, digital
-  # or analog, had ever actually reached EdgeViss's evaluator on those
+  # or analog, had ever actually reached EdgeVISS's evaluator on those
   # gateways, silently, since the day they were commissioned. A real digital
   # HIGHTEMPAL trip on a fielded gateway confirmed this: EdgeX recorded the true/false
   # transition correctly, but zero alarm_event was ever created because the
@@ -1088,7 +1088,7 @@ else
   UPDATE_LOG_FILE="$UPDATE_LOG_DIR/update-$(echo "$TARGET" | tr -c 'A-Za-z0-9._-' '_')-$(date +%Y%m%d-%H%M%S).log"
   mkdir -p "$UPDATE_LOG_DIR" 2>/dev/null || true
   {
-    echo "EdgeViss update failure: ${CURRENT} -> ${TARGET} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+    echo "EdgeVISS update failure: ${CURRENT} -> ${TARGET} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
     echo "Container state at failure: ${CSTATE:-missing} (exit ${LAST_EXIT:-?}); last /api/health HTTP: ${LAST_CODE}"
     echo "--- docker inspect (State) ---"
     docker inspect -f '{{json .State}}' "$CONTAINER" 2>&1 || echo "(inspect unavailable)"
